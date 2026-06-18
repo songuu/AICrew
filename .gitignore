@@ -1,6 +1,9 @@
 node_modules/
 dist/
+.next/
+out/
 .env
 .env.*
 *.log
+*.tgz
 docs/plans/.handoff/

@@ -5,8 +5,18 @@
   "type": "module",
   "description": "AICrew Studio product implementation from PRD",
   "scripts": {
-    "dev": "node server.mjs",
-    "start": "node server.mjs",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "serve:out": "node server.mjs out",
     "test": "node --test tests/domain.test.js"
+  },
+  "dependencies": {
+    "next": "^16.2.9",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "overrides": {
+    "postcss": "^8.5.10"
   }
 }

@@ -2,8 +2,9 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 
-const root = resolve(".");
+const root = resolve(process.argv[2] || ".");
 const basePort = Number.parseInt(process.env.PORT || "5173", 10);
+const basePath = process.env.BASE_PATH || "/aicrew";
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -19,7 +20,12 @@ const mimeTypes = {
 
 function toSafePath(requestUrl) {
   const url = new URL(requestUrl, "http://localhost");
-  const pathname = decodeURIComponent(url.pathname);
+  let pathname = decodeURIComponent(url.pathname);
+  if (basePath !== "/" && pathname.startsWith(`${basePath}/`)) {
+    pathname = pathname.slice(basePath.length);
+  } else if (basePath !== "/" && pathname === basePath) {
+    pathname = "/";
+  }
   const requested = pathname === "/" ? "/index.html" : pathname;
   const filePath = normalize(join(root, requested));
   if (!filePath.startsWith(root)) {
@@ -32,7 +38,10 @@ function createStaticServer() {
   return createServer((request, response) => {
     const filePath = toSafePath(request.url || "/");
     const fallbackPath = join(root, "index.html");
-    const target = existsSync(filePath) && statSync(filePath).isFile() ? filePath : fallbackPath;
+    const indexPath = existsSync(filePath) && statSync(filePath).isDirectory()
+      ? join(filePath, "index.html")
+      : filePath;
+    const target = existsSync(indexPath) && statSync(indexPath).isFile() ? indexPath : fallbackPath;
     response.writeHead(200, {
       "Content-Type": mimeTypes[extname(target)] || "application/octet-stream",
       "Cache-Control": "no-store"
@@ -51,7 +60,7 @@ function listenOnAvailablePort(port, attempts = 10) {
     throw error;
   });
   server.listen(port, "127.0.0.1", () => {
-    console.log(`AICrew Studio running at http://127.0.0.1:${port}`);
+    console.log(`AICrew Studio static server: http://127.0.0.1:${port}`);
   });
 }
 
