@@ -1,0 +1,12 @@
+{
+  "name": "aicrew-studio",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AICrew Studio product implementation from PRD",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
+    "test": "node --test tests/domain.test.js"
+  }
+}
