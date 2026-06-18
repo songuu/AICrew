@@ -11,15 +11,47 @@
 | base | `/aicrew/` |
 | 域名 | `songuu.top` |
 | 线上入口 | `https://songuu.top/aicrew/` |
+| 根首页入口 | `https://songuu.top/` |
 
 ## 本地门禁
 
 ```powershell
 npm test
 npm run build
+npm audit --omit=dev
 ```
 
 `npm run build` 生成 Next 静态导出目录 `out/`，并要求 `out/index.html` 内包含 `/aicrew/_next` 资源前缀，避免线上 assets 404。
+
+## GitHub Actions 自动发布
+
+`main` 分支 push 会触发 `.github/workflows/deploy-aicrew.yml`：
+
+1. `npm ci`
+2. `npm test`
+3. `npm run build`
+4. `npm audit --omit=dev`
+5. 检查 `out/index.html` 与 `/aicrew/_next` 静态资源前缀。
+6. 打包 `out/` 为 `.tgz`。
+7. 通过 SSH 上传到生产主机。
+8. 远端备份旧目录并原子换入新目录。
+9. 验证 loopback 与公网 HTTPS。
+10. 验证 `https://songuu.top/` 根首页仍包含 `AICrew Studio` 入口。
+
+必须配置 GitHub repository secret：
+
+| Secret | 用途 |
+|---|---|
+| `AICREW_SSH_PRIVATE_KEY` | 可登录生产主机的部署私钥 |
+
+可选 secret：
+
+| Secret | 默认值 |
+|---|---|
+| `AICREW_DEPLOY_HOST` | `47.253.230.197` |
+| `AICREW_DEPLOY_USER` | `root` |
+| `AICREW_WEB_ROOT` | `/opt/aicrew/current/out` |
+| `AICREW_DOMAIN` | `songuu.top` |
 
 ## 一键部署
 

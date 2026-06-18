@@ -8,6 +8,12 @@ Production target:
 https://songuu.top/aicrew/
 ```
 
+Root gateway target:
+
+```text
+https://songuu.top/
+```
+
 ## Local Development
 
 ```bash
@@ -67,6 +73,36 @@ Default target:
 | Domain | `songuu.top` |
 
 The script runs tests, builds, checks the `/aicrew` asset base, packages `out/`, uploads by `scp`, performs remote backup + atomic swap, then verifies public HTTPS paths.
+
+## GitHub Actions Deploy
+
+Pushes to `main` trigger `.github/workflows/deploy-aicrew.yml`, which runs:
+
+```text
+npm ci
+npm test
+npm run build
+npm audit --omit=dev
+artifact self-check
+remote backup + atomic swap
+production verification
+root gateway entry verification
+```
+
+Required repository secret:
+
+| Secret | Purpose |
+|---|---|
+| `AICREW_SSH_PRIVATE_KEY` | SSH private key with deploy access to the production host |
+
+Optional repository secrets override the defaults:
+
+| Secret | Default |
+|---|---|
+| `AICREW_DEPLOY_HOST` | `47.253.230.197` |
+| `AICREW_DEPLOY_USER` | `root` |
+| `AICREW_WEB_ROOT` | `/opt/aicrew/current/out` |
+| `AICREW_DOMAIN` | `songuu.top` |
 
 ## Product Scope
 

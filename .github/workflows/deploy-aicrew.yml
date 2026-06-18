@@ -1,0 +1,140 @@
+name: Deploy AICrew Studio
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: aicrew-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      NODE_VERSION: "24"
+      DEPLOY_HOST: ${{ secrets.AICREW_DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.AICREW_DEPLOY_USER }}
+      WEB_ROOT: ${{ secrets.AICREW_WEB_ROOT }}
+      DOMAIN: ${{ secrets.AICREW_DOMAIN }}
+      SSH_PRIVATE_KEY: ${{ secrets.AICREW_SSH_PRIVATE_KEY }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set deployment defaults
+        run: |
+          set -euo pipefail
+          echo "DEPLOY_HOST=${DEPLOY_HOST:-47.253.230.197}" >> "$GITHUB_ENV"
+          echo "DEPLOY_USER=${DEPLOY_USER:-root}" >> "$GITHUB_ENV"
+          echo "WEB_ROOT=${WEB_ROOT:-/opt/aicrew/current/out}" >> "$GITHUB_ENV"
+          echo "DOMAIN=${DOMAIN:-songuu.top}" >> "$GITHUB_ENV"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build static export
+        run: npm run build
+
+      - name: Run dependency audit
+        run: npm audit --omit=dev
+
+      - name: Validate static artifact
+        run: |
+          set -euo pipefail
+          test -f out/index.html
+          grep -q '/aicrew/_next' out/index.html
+          file_count="$(find out -type f | wc -l)"
+          echo "out file count: ${file_count}"
+          test "${file_count}" -gt 10
+
+      - name: Package artifact
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/aicrew-out-${GITHUB_SHA}.tgz"
+          tar -czf "${archive}" -C out .
+          echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
+          echo "REMOTE_ARCHIVE=/tmp/aicrew-out-${GITHUB_SHA}.tgz" >> "$GITHUB_ENV"
+          echo "REMOTE_STAGE=/tmp/aicrew-stage-${GITHUB_SHA}" >> "$GITHUB_ENV"
+
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PRIVATE_KEY}" ]; then
+            echo "::error::Missing required GitHub secret AICREW_SSH_PRIVATE_KEY"
+            exit 1
+          fi
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/aicrew_deploy_key
+          chmod 600 ~/.ssh/aicrew_deploy_key
+          ssh-keyscan -T 10 -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts
+
+      - name: Upload artifact
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/aicrew_deploy_key -o BatchMode=yes \
+            "${ARCHIVE}" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_ARCHIVE}"
+
+      - name: Deploy with remote backup and atomic swap
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/aicrew_deploy_key -o BatchMode=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "WEB_ROOT='${WEB_ROOT}' REMOTE_ARCHIVE='${REMOTE_ARCHIVE}' REMOTE_STAGE='${REMOTE_STAGE}' bash -s" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+
+          timestamp="$(date +%Y%m%d%H%M%S)"
+          rm -rf "${REMOTE_STAGE}"
+          mkdir -p "${REMOTE_STAGE}"
+          tar -xzf "${REMOTE_ARCHIVE}" -C "${REMOTE_STAGE}"
+          test -f "${REMOTE_STAGE}/index.html"
+          chmod -R a+rX "${REMOTE_STAGE}"
+          mkdir -p "$(dirname "${WEB_ROOT}")"
+
+          if [ -e "${WEB_ROOT}" ]; then
+            mv "${WEB_ROOT}" "${WEB_ROOT}.bak.${timestamp}"
+          fi
+
+          mv "${REMOTE_STAGE}" "${WEB_ROOT}"
+          rm -f "${REMOTE_ARCHIVE}"
+          echo "ROLLBACK_BACKUP=${WEB_ROOT}.bak.${timestamp}"
+          echo "FILE_COUNT=$(find "${WEB_ROOT}" -type f | wc -l)"
+          REMOTE_SCRIPT
+
+      - name: Verify production
+        run: |
+          set -euo pipefail
+          for path in /aicrew/ /aicrew/workbench/ /aicrew/skills/ /aicrew/admin/; do
+            code="$(ssh -i ~/.ssh/aicrew_deploy_key -o BatchMode=yes \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "curl -sk -o /dev/null -w '%{http_code}' -H 'Host: ${DOMAIN}' 'https://127.0.0.1${path}'")"
+            echo "loopback ${path} -> ${code}"
+            test "${code}" = "200"
+
+            public_code="$(curl -k -L -s -o /dev/null -w '%{http_code}' "https://${DOMAIN}${path}")"
+            echo "public https://${DOMAIN}${path} -> ${public_code}"
+            test "${public_code}" = "200"
+          done
+
+          curl -k -L -s "https://${DOMAIN}/" | grep -q 'AICrew Studio'
+          echo "root gateway entry -> ok"
