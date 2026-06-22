@@ -2625,8 +2625,9 @@ body::after {
     grid-template-columns: 360px minmax(0, 1fr);
   }
 
-  .bottom-tool-dock {
-    left: calc(360px + (100vw - 360px) / 2);
+  .bottom-tool-dock,
+  .zoom-dock {
+    display: none;
   }
 
   .main-surface {
@@ -2713,5 +2714,122 @@ body::after {
   .assistant-compose em,
   .topbar h1 {
     overflow-wrap: anywhere;
+  }
+}
+
+/* Responsive fix: content-aware workbench breakpoints */
+@media (max-width: 1500px) {
+  .app-shell {
+    grid-template-columns: 360px minmax(0, 1fr);
+  }
+
+  .main-surface {
+    padding-right: 0;
+  }
+
+  .topbar,
+  .topbar > div,
+  .page-stack,
+  .workbench-layout,
+  .workspace-canvas,
+  .output-grid,
+  .variant-detail {
+    min-width: 0;
+  }
+
+  .topbar {
+    flex-wrap: wrap;
+  }
+
+  .topbar h1 {
+    font-size: clamp(26px, 4vw, 42px);
+  }
+
+  .workbench-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "compose"
+      "canvas"
+      "run";
+  }
+
+  .composer-panel,
+  .run-panel,
+  .workspace-canvas {
+    width: 100%;
+  }
+
+  .workspace-canvas {
+    min-height: 0;
+  }
+
+  .output-grid {
+    grid-template-columns: minmax(280px, 0.72fr) minmax(360px, 1fr);
+  }
+
+  .video-bay {
+    min-height: 560px;
+  }
+
+  .right-tool-rail {
+    display: none;
+  }
+
+  .bottom-tool-dock,
+  .zoom-dock {
+    display: none;
+  }
+}
+
+@media (max-width: 1280px) {
+  .output-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .video-bay {
+    min-height: 520px;
+  }
+
+  .variant-detail {
+    max-width: 100%;
+  }
+
+  .hook-line,
+  .video-copy strong,
+  .storyboard-list p,
+  .copy-pack strong,
+  .copy-pack span {
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+}
+
+@media (max-width: 980px) {
+  .app-shell {
+    display: block;
+    padding: 12px;
+  }
+
+  .sidebar {
+    position: relative;
+    top: auto;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    margin-bottom: 12px;
+  }
+
+  .main-surface {
+    padding: 0 0 34px;
+  }
+
+  .topbar {
+    top: 12px;
+    width: 100%;
+  }
+
+  .bottom-tool-dock,
+  .zoom-dock {
+    display: none;
   }
 }
