@@ -1,9 +1,11 @@
 name: Deploy AICrew Studio
 
 on:
-  push:
-    branches:
-      - main
+  # 自动 push 部署已停用：应用已转服务端模式（app/api 路由），与本静态导出流水线不兼容
+  # （build 不产出 out/，Validate static artifact 必失败）。服务端部署改用
+  # scripts/deploy-server.ps1（PM2 + next start + nginx 反代 :3101）。
+  # 如需恢复 push-to-deploy，需把本流水线改写为服务端部署并在 GH 配置 AICREW_AI_* secrets。
+  # 手动触发仍保留（仅在确认应用为静态导出兼容时使用）。
   workflow_dispatch:
 
 concurrency:
