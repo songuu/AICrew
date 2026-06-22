@@ -13,65 +13,122 @@ export const agents = [
     name: "Brief Agent",
     title: "需求理解",
     accent: "#8bd3ff",
-    output: "Creative Brief JSON"
+    responsibility: "把用户自然语言和素材上下文转成可编辑的 Creative Brief。",
+    input: "用户目标、商品信息、上传素材、平台偏好",
+    output: "Creative Brief JSON",
+    tools: ["brief_parser", "asset_tagger", "default_field_filler"],
+    evaluation: "关键字段完整、平台/受众/目标明确、缺失项有默认值",
+    cost: 6
   },
   {
     id: "strategy",
     name: "Strategy Agent",
     title: "策略策划",
     accent: "#f9c74f",
-    output: "受众、卖点、内容角度"
+    responsibility: "把 Brief 转换成内容策略和转化角度。",
+    input: "Creative Brief JSON、品牌语气、平台规则",
+    output: "受众、卖点、内容角度",
+    tools: ["audience_mapper", "platform_playbook", "compliance_rules"],
+    evaluation: "前 3 秒 Hook 清晰、痛点具体、CTA 与平台匹配",
+    cost: 10
   },
   {
     id: "script",
     name: "Script Agent",
     title: "脚本生成",
     accent: "#ff7a90",
-    output: "3 个广告脚本"
+    responsibility: "生成可直接进入视频/图文生产的脚本结构。",
+    input: "内容策略、商品卖点、目标时长",
+    output: "3 个广告脚本",
+    tools: ["script_template_engine", "hook_generator", "cta_writer"],
+    evaluation: "镜头服务转化、首屏有 Hook、结尾有 CTA",
+    cost: 12
   },
   {
     id: "storyboard",
     name: "Storyboard Agent",
     title: "分镜拆解",
     accent: "#b8f27b",
-    output: "镜头、时长、转场"
+    responsibility: "把脚本拆成镜头、时长、画面动作和转场。",
+    input: "脚本、平台画幅、素材引用",
+    output: "镜头、时长、转场",
+    tools: ["shot_planner", "duration_allocator", "asset_reference_mapper"],
+    evaluation: "镜头顺序完整、时长不超限、素材引用明确",
+    cost: 10
   },
   {
     id: "visual",
     name: "Visual Agent",
     title: "视觉资产",
     accent: "#a78bfa",
-    output: "封面与画面方向"
+    responsibility: "生成/编辑封面、背景、产品场景图和视觉方向。",
+    input: "分镜、品牌资产、商品素材",
+    output: "封面与画面方向",
+    tools: ["cover_generator", "product_scene_builder", "brand_style_applier"],
+    evaluation: "产品可见、品牌一致、画面清晰、适配安全边距",
+    cost: 18
   },
   {
     id: "video",
     name: "Video Agent",
     title: "视频合成",
     accent: "#45e0c6",
-    output: "15 秒竖版视频"
+    responsibility: "完成图生视频、片段合成、字幕和转场模拟。",
+    input: "视觉资产、分镜、脚本字幕",
+    output: "15 秒竖版视频",
+    tools: ["image_to_video_router", "subtitle_burner", "clip_composer"],
+    evaluation: "画幅正确、节奏匹配、产品连续可见、字幕可读",
+    cost: 36
   },
   {
     id: "copy",
     name: "Copywriting Agent",
     title: "文案包装",
     accent: "#ffb86b",
-    output: "标题、Caption、Hashtag"
+    responsibility: "生成标题、Caption、Hashtag 和 CTA。",
+    input: "策略、脚本、平台文案规则",
+    output: "标题、Caption、Hashtag",
+    tools: ["caption_writer", "hashtag_picker", "cta_optimizer"],
+    evaluation: "文案可发布、标签贴合平台、CTA 明确",
+    cost: 8
   },
   {
     id: "qa",
     name: "QA Agent",
     title: "质量检查",
     accent: "#6ee7b7",
-    output: "质量分与合规建议"
+    responsibility: "检查品牌一致性、平台适配、内容完整性与合规风险。",
+    input: "全部资产、Brief、品牌禁用词",
+    output: "质量分与合规建议",
+    tools: ["quality_scorer", "forbidden_word_scan", "platform_fit_checker"],
+    evaluation: "质量分可解释、风险可定位、修复建议明确",
+    cost: 6
   },
   {
     id: "export",
     name: "Export Agent",
     title: "导出适配",
     accent: "#93c5fd",
-    output: "TikTok/Reels/Shorts/小红书 内容包"
+    responsibility: "按平台输出视频/封面/文案/分镜或图文包。",
+    input: "通过 QA 的变体、平台规格、项目元数据",
+    output: "TikTok/Reels/Shorts/小红书 内容包",
+    tools: ["format_packager", "platform_preset_mapper", "export_manifest_builder"],
+    evaluation: "文件清单完整、画幅/格式正确、导出可追溯",
+    cost: 8
   }
 ];
+
+export const orchestratorAgent = {
+  id: "orchestrator",
+  name: "Orchestrator Agent",
+  title: "总控调度",
+  responsibility: "按 Skill 编排 Agent 顺序、记录结构化交接、控制重试与计费。",
+  input: "Creative Brief、Skill workflow、Brand Memory、素材库",
+  output: "任务计划、执行结果、事件日志",
+  tools: ["workflow_router", "retry_controller", "credit_meter"],
+  evaluation: "每步有状态、事件、成本、可追溯产物",
+  retryPolicy: "单 Agent 可重试；失败时保留原任务并追加事件。"
+};
 
 export const skills = [
   {
@@ -388,14 +445,7 @@ export function runCreativeWorkflow({ brief, skillId, brandKit = defaultBrandKit
   const credits = estimateCredits(normalizedBrief, skill.id);
   const workflowAgents = skill.agents.map((agentId, index) => {
     const agent = agents.find(item => item.id === agentId);
-    return {
-      ...agent,
-      status: "completed",
-      progress: 100,
-      duration: `${(index + 1) * 7 + 8}s`,
-      completedAt: now(),
-      summary: buildAgentSummary(agentId, normalizedBrief, brandKit)
-    };
+    return buildAgentStep(agent, normalizedBrief, skill, brandKit, index);
   });
   const variants = buildVariants(normalizedBrief, brandKit, skill);
   const qa = buildQaReport(normalizedBrief, variants, brandKit, skill);
@@ -405,7 +455,9 @@ export function runCreativeWorkflow({ brief, skillId, brandKit = defaultBrandKit
     skillId: skill.id,
     skillName: skill.name,
     brief: normalizedBrief,
+    orchestrator: buildOrchestratorRecord(skill, normalizedBrief),
     agents: workflowAgents,
+    events: buildAgentEvents(workflowAgents),
     variants,
     qa,
     credits: {
@@ -506,6 +558,103 @@ export function calculateQualityScore(metrics) {
 export function findSkill(skillId) {
   const skill = skills.find(item => item.id === skillId) || skills[0];
   return skill;
+}
+
+function buildOrchestratorRecord(skill, brief) {
+  return {
+    ...orchestratorAgent,
+    status: "completed",
+    skillId: skill.id,
+    plan: skill.agents,
+    summary: "调度 " + skill.name + "：" + skill.agents.length + " 个 Agent，目标 " + brief.goal + "。",
+    completedAt: now()
+  };
+}
+
+function buildAgentStep(agent, brief, skill, brandKit, index) {
+  return {
+    ...agent,
+    status: "completed",
+    progress: 100,
+    duration: String((index + 1) * 7 + 8) + "s",
+    completedAt: now(),
+    summary: buildAgentSummary(agent.id, brief, brandKit),
+    artifact: buildAgentArtifact(agent.id, brief, skill),
+    retryCount: 0
+  };
+}
+
+function buildAgentEvents(workflowAgents) {
+  const total = Math.max(1, workflowAgents.length);
+  return workflowAgents.map((agent, index) => ({
+    id: makeId("event"),
+    event: "agent_completed",
+    agentId: agent.id,
+    agent: agent.name,
+    progress: Math.round(((index + 1) / total) * 100),
+    message: agent.output + " completed.",
+    credits: agent.cost,
+    createdAt: agent.completedAt
+  }));
+}
+
+function buildAgentArtifact(agentId, brief, skill) {
+  const artifacts = {
+    brief: "Brief: " + brief.productName + " / " + brief.platform + " / " + brief.targetAudience,
+    strategy: "Strategy: " + brief.goal + " with " + brief.style,
+    script: skill.agents.includes("video") ? "Scripts: 3 video ad variants" : "Scripts: image-first content outline",
+    storyboard: skill.agents.includes("video") ? "Storyboard: 5 timed shots" : "Storyboard: cover + note sections",
+    visual: "Visual: " + brief.style + " cover and product scenes",
+    video: "Video: " + brief.platform + " " + findPlatformPreset(brief.platform).ratio + " content simulation",
+    copy: "Copy package: title, caption, hashtags, CTA",
+    qa: "QA report: quality score, compliance, platform fit",
+    export: "Export manifest: " + exportFilesFor(skill).join(", ")
+  };
+  return artifacts[agentId] || "Agent artifact recorded";
+}
+
+export function retryAgentStep(task, agentId) {
+  const index = task.agents.findIndex(agent => agent.id === agentId);
+  if (index < 0) throw new Error("Agent not found: " + agentId);
+
+  const currentAgent = task.agents[index];
+  const retryCount = (currentAgent.retryCount || 0) + 1;
+  const cost = currentAgent.cost || agents.find(agent => agent.id === agentId)?.cost || 8;
+  const completedAt = now();
+  const updatedAgent = {
+    ...currentAgent,
+    status: "completed",
+    progress: 100,
+    retryCount,
+    completedAt,
+    duration: String(Number.parseInt(currentAgent.duration, 10) || 12) + "s · retry " + retryCount,
+    summary: currentAgent.title + " 已按当前 Brief 重新执行，结构化产物已刷新。",
+    artifact: currentAgent.output + " · retry " + retryCount
+  };
+  const retryEvent = {
+    id: makeId("event"),
+    event: "agent_retried",
+    agentId,
+    agent: currentAgent.name,
+    progress: 100,
+    message: currentAgent.name + " retried successfully.",
+    credits: cost,
+    createdAt: completedAt
+  };
+
+  return {
+    cost,
+    task: {
+      ...task,
+      updatedAt: completedAt,
+      agents: task.agents.map(agent => (agent.id === agentId ? updatedAgent : agent)),
+      events: [...(task.events || []), retryEvent],
+      credits: {
+        ...task.credits,
+        actual: task.credits.actual + cost
+      }
+    }
+  };
 }
 
 function buildAgentSummary(agentId, brief, brandKit) {

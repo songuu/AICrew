@@ -1,10 +1,10 @@
-// AI 增强工作流：在确定性管线之上叠加真实 LLM 文案与（OpenAI）封面图。
+// AI 增强工作流：在确定性管线之上叠加真实 LLM 文案与系统图像模型封面。
 // 设计原则：
-//  - 包装而非修改 runCreativeWorkflow —— 评分/结构/导出契约与 13 个 domain 测试不受影响。
-//  - 无 token → 原样回退确定性模拟。
+//  - 包装而非修改 runCreativeWorkflow —— 评分/结构/导出契约与 domain 测试不受影响。
+//  - 无系统 AI 配置 → 原样回退确定性模拟。
 //  - 任一 AI 调用失败 → 局部回退该 variant 的模拟文案，整体不抛错（aiMeta 记录降级）。
 import { runCreativeWorkflow, findPlatformPreset, defaultBrandKit } from "../domain.js";
-import { isAiConfigured, AI_PROVIDERS } from "./config.js";
+import { hasAiMode, isAiConfigured, selectedModelFor } from "./config.js";
 import { generateText, generateImage } from "./providers.js";
 
 const COPY_SYSTEM = "你是资深广告与种草内容创作专家。严格只输出 JSON，不要解释、不要 markdown 代码块。";
@@ -35,14 +35,12 @@ function buildImagePrompt(brief, variant, brandKit, preset) {
   ].join(" ");
 }
 
-// 画幅 → OpenAI 图像尺寸（gpt-image-1 支持 1024x1024 / 1024x1536 / 1536x1024）。
 function imageSizeFor(preset) {
   const [w, h] = String(preset.ratio).split(":").map(Number);
   if (!w || !h || w === h) return "1024x1024";
   return h > w ? "1024x1536" : "1536x1024";
 }
 
-// 从模型输出中容错提取 JSON（兼容包裹文字 / 代码块）。
 function extractJson(text) {
   if (!text) return null;
   try {
@@ -61,9 +59,6 @@ function extractJson(text) {
   return null;
 }
 
-// 把 AI 文案不可变地合并进 variant；AI 只增强可见文案，不动评分/结构/导出契约。
-// 返回 {variant, applied}：仅当至少一个字段真正被 AI 覆盖时 applied=true，
-// 这样空壳 JSON（如 {}）不会误置 aiGenerated 徽标、也不计入 copyApplied。
 function mergeAiCopy(variant, aiCopy) {
   if (!aiCopy) return { variant, applied: false };
   const hook = typeof aiCopy.hook === "string" && aiCopy.hook.trim() ? aiCopy.hook.trim() : null;
@@ -92,14 +87,14 @@ export async function runCreativeWorkflowWithAI({ brief, skillId, brandKit = def
   const base = runCreativeWorkflow({ brief, skillId, brandKit });
 
   if (!isAiConfigured(aiConfig)) {
-    return { ...base, aiMeta: { used: false, reason: "no-config" } };
+    return { ...base, aiMeta: { used: false, reason: "no-system-config" } };
   }
 
   const preset = findPlatformPreset(base.brief.platform);
-  const meta = AI_PROVIDERS[aiConfig.provider];
+  const textModel = selectedModelFor(aiConfig, aiConfig?.selection, "text");
+  const imageModel = selectedModelFor(aiConfig, aiConfig?.selection, "image");
 
   try {
-    // 各 variant 并发生成文案；单个失败只回退该条，不影响其余。
     const copies = await Promise.all(
       base.variants.map(async variant => {
         try {
@@ -120,9 +115,8 @@ export async function runCreativeWorkflowWithAI({ brief, skillId, brandKit = def
     const merged = base.variants.map((variant, index) => mergeAiCopy(variant, copies[index]));
     let variants = merged.map(item => item.variant);
 
-    // 封面图：仅 OpenAI + 已启用 + 首个 variant（控成本）。
     let imageApplied = false;
-    if (aiConfig.imageEnabled && meta?.supportsImage && variants[0]) {
+    if (hasAiMode(aiConfig, "image") && variants[0]) {
       try {
         const imageUrl = await generateImage(aiConfig, {
           prompt: buildImagePrompt(base.brief, variants[0], brandKit, preset),
@@ -145,14 +139,14 @@ export async function runCreativeWorkflowWithAI({ brief, skillId, brandKit = def
       variants,
       aiMeta: {
         used: copyApplied > 0 || imageApplied,
-        provider: aiConfig.provider,
-        model: aiConfig.model,
+        provider: aiConfig.providerName || aiConfig.provider,
+        model: textModel?.name || aiConfig.model,
+        imageModel: imageApplied ? imageModel?.name || aiConfig.imageModel : undefined,
         copyApplied,
         imageApplied
       }
     };
   } catch (error) {
-    // 兜底：任何未预期错误都回退到确定性结果，绝不让 UI 拿到异常。
     return { ...base, aiMeta: { used: false, error: error instanceof Error ? error.message : String(error) } };
   }
 }

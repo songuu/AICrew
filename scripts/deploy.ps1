@@ -1,6 +1,5 @@
 #!/usr/bin/env pwsh
-# Static production deploy for AICrew Studio.
-# Mirrors C:\project\my\agent-build\scripts\deploy.ps1.
+# Legacy static deploy for AICrew Studio. Production uses Next server runtime; guarded by -LegacyStaticOut.
 
 [CmdletBinding()]
 param(
@@ -15,10 +14,15 @@ param(
   [switch]$SkipBuild,
   [switch]$SkipVerify,
   [switch]$DryRun,
-  [switch]$KeepArchive
+  [switch]$KeepArchive,
+  [switch]$LegacyStaticOut
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $LegacyStaticOut) {
+  throw "Legacy static out deploy is disabled. Production now uses Next server runtime via PM2 (aicrew-studio on 127.0.0.1:3101). Use the server-runtime deployment flow documented in docs/DEPLOYMENT.md, or pass -LegacyStaticOut only for an intentional preview/static rollback."
+}
 $script:DryRunEnabled = [bool]$DryRun
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot

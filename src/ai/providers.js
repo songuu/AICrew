@@ -1,7 +1,3 @@
-// 厂商适配层：统一文本/图像生成接口，浏览器直连 Claude / OpenAI。
-// fetch 可注入（fetchImpl）以便单测无需真实网络与真实 key。
-import { AI_PROVIDERS } from "./config.js";
-
 const DEFAULT_MAX_TOKENS = 1024;
 
 function resolveFetch(fetchImpl) {
@@ -10,24 +6,18 @@ function resolveFetch(fetchImpl) {
   return fn;
 }
 
-function normalizeBase(config, meta) {
-  const base = (config.baseURL || meta.defaultBaseURL).replace(/\/+$/, "");
-  // 发送路径不信任未校验配置：host 不在官方白名单一律拒发，防止 key 外泄。
-  if (Array.isArray(meta.hosts)) {
-    let host = "";
-    try {
-      host = new URL(base).hostname;
-    } catch {
-      host = "";
-    }
-    if (!meta.hosts.includes(host)) {
-      throw new Error(`拒绝向非官方主机发送请求：${host || base}`);
-    }
+function normalizeBase(config) {
+  const base = String(config?.baseURL || "").trim().replace(/\/+$/, "");
+  if (!base) throw new Error("AI 平台 baseURL 未配置");
+  try {
+    const url = new URL(base);
+    if (!["https:", "http:"].includes(url.protocol)) throw new Error("bad protocol");
+  } catch {
+    throw new Error("AI 平台 baseURL 必须是合法 URL");
   }
   return base;
 }
 
-// 从厂商错误响应里提取尽量有意义的信息，避免泄漏整段 body 到 UI。
 async function readErrorDetail(response) {
   try {
     const data = await response.json();
@@ -41,24 +31,84 @@ async function readErrorDetail(response) {
   }
 }
 
-// 统一文本生成。config: {provider, apiKey, model, baseURL}
-// opts: {system, prompt, maxTokens, signal, fetchImpl}
+function apiUrl(base, path) {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  if (base.endsWith("/v1") && normalizedPath.startsWith("/v1/")) {
+    return `${base}${normalizedPath.slice(3)}`;
+  }
+  return `${base}${normalizedPath}`;
+}
+
+function inferImageApi(config, base) {
+  const explicit = String(config?.imageApi || "").trim().toLowerCase();
+  if (["siliconflow", "openai"].includes(explicit)) return explicit;
+  try {
+    const hostname = new URL(base).hostname;
+    if (hostname.endsWith("siliconflow.cn")) return "siliconflow";
+  } catch {
+    // normalizeBase already validates the URL; keep generic format if that ever changes.
+  }
+  return "openai";
+}
+
+function optionalNumber(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : undefined;
+}
+
+function imageRequestBody(config, prompt, size, imageApi) {
+  const model = config.imageModel || config.model;
+  const imageSize = config.size || size;
+  if (imageApi === "siliconflow") {
+    return {
+      model,
+      prompt,
+      image_size: imageSize,
+      batch_size: optionalNumber(config.batchSize) || 1,
+      num_inference_steps: optionalNumber(config.numInferenceSteps) || 20,
+      guidance_scale: optionalNumber(config.guidanceScale) || 7.5
+    };
+  }
+  return { model, prompt, size: imageSize, n: 1 };
+}
+
+async function callSystemApi(config, mode, payload, fetchImpl) {
+  const doFetch = resolveFetch(fetchImpl);
+  const response = await doFetch(config.endpoint || "/api/ai/generate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      mode,
+      modelId: config.selection?.[mode] || "auto",
+      ...payload
+    }),
+    signal: payload.signal
+  });
+  if (!response.ok) {
+    throw new Error(`系统 AI 调用失败 (${response.status}): ${await readErrorDetail(response)}`);
+  }
+  return response.json();
+}
+
 export async function generateText(config, { system = "", prompt, maxTokens = DEFAULT_MAX_TOKENS, signal, fetchImpl } = {}) {
   if (!prompt || !String(prompt).trim()) throw new Error("generateText: prompt 不能为空");
-  const meta = AI_PROVIDERS[config?.provider];
-  if (!meta) throw new Error(`不支持的 provider: ${config?.provider}`);
-  const doFetch = resolveFetch(fetchImpl);
-  const base = normalizeBase(config, meta);
+  if (config?.provider === "system") {
+    const data = await callSystemApi(config, "text", { system, prompt, maxTokens, signal }, fetchImpl);
+    if (!data?.text) throw new Error("系统 AI 文本返回为空");
+    return data.text;
+  }
 
-  if (config.provider === "claude") {
-    const response = await doFetch(`${base}/v1/messages`, {
+  const doFetch = resolveFetch(fetchImpl);
+  const base = normalizeBase(config);
+
+  if (config?.provider === "claude") {
+    const response = await doFetch(apiUrl(base, "/v1/messages"), {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-api-key": config.apiKey,
-        "anthropic-version": "2023-06-01",
-        // 浏览器直连必需：声明知晓 key 暴露在前端的风险（静态站无后端代理）。
-        "anthropic-dangerous-direct-browser-access": "true"
+        "anthropic-version": "2023-06-01"
       },
       body: JSON.stringify({
         model: config.model,
@@ -79,8 +129,7 @@ export async function generateText(config, { system = "", prompt, maxTokens = DE
     return text;
   }
 
-  // openai (chat completions)
-  const response = await doFetch(`${base}/v1/chat/completions`, {
+  const response = await doFetch(apiUrl(base, "/v1/chat/completions"), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -97,42 +146,74 @@ export async function generateText(config, { system = "", prompt, maxTokens = DE
     signal
   });
   if (!response.ok) {
-    throw new Error(`OpenAI API 调用失败 (${response.status}): ${await readErrorDetail(response)}`);
+    throw new Error(`AI 文本生成失败 (${response.status}): ${await readErrorDetail(response)}`);
   }
   const data = await response.json();
   const text = data?.choices?.[0]?.message?.content?.trim() || "";
-  if (!text) throw new Error("OpenAI API 返回为空");
+  if (!text) throw new Error("AI 文本返回为空");
   return text;
 }
 
-// 图像生成（仅支持 supportsImage 的 provider，目前为 OpenAI）。返回 dataURL 或 http URL。
 export async function generateImage(config, { prompt, size = "1024x1024", signal, fetchImpl } = {}) {
-  const meta = AI_PROVIDERS[config?.provider];
-  if (!meta?.supportsImage) throw new Error(`${config?.provider} 不支持图像生成`);
   if (!prompt || !String(prompt).trim()) throw new Error("generateImage: prompt 不能为空");
-  const doFetch = resolveFetch(fetchImpl);
-  const base = normalizeBase(config, meta);
+  if (config?.provider === "system") {
+    const data = await callSystemApi(config, "image", { prompt, size, signal }, fetchImpl);
+    if (!data?.imageUrl) throw new Error("系统 AI 图像返回为空");
+    return data.imageUrl;
+  }
 
-  const response = await doFetch(`${base}/v1/images/generations`, {
+  const doFetch = resolveFetch(fetchImpl);
+  const base = normalizeBase(config);
+  const imageApi = inferImageApi(config, base);
+  const response = await doFetch(apiUrl(base, "/v1/images/generations"), {
     method: "POST",
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${config.apiKey}`
     },
-    body: JSON.stringify({ model: meta.imageModel, prompt, size, n: 1 }),
+    body: JSON.stringify(imageRequestBody(config, prompt, size, imageApi)),
     signal
   });
   if (!response.ok) {
-    throw new Error(`OpenAI 图像生成失败 (${response.status}): ${await readErrorDetail(response)}`);
+    throw new Error(`AI 图像生成失败 (${response.status}): ${await readErrorDetail(response)}`);
   }
   const data = await response.json();
-  const item = data?.data?.[0];
+  const item = data?.images?.[0] || data?.data?.[0];
   if (item?.b64_json) return `data:image/png;base64,${item.b64_json}`;
   if (item?.url) return item.url;
-  throw new Error("OpenAI 图像生成返回为空");
+  throw new Error("AI 图像生成返回为空");
 }
 
-// 轻量连通性测试：发一个最小 prompt。永不抛错，返回 {ok, message}。
+export async function generateVideo(config, { prompt, imageUrl, signal, fetchImpl } = {}) {
+  if (!prompt || !String(prompt).trim()) throw new Error("generateVideo: prompt 不能为空");
+  if (config?.provider === "system") {
+    const data = await callSystemApi(config, "video", { prompt, imageUrl, signal }, fetchImpl);
+    if (!data?.videoUrl && !data?.jobId) throw new Error("系统 AI 视频返回为空");
+    return data;
+  }
+
+  const doFetch = resolveFetch(fetchImpl);
+  const base = normalizeBase(config);
+  const response = await doFetch(apiUrl(base, "/v1/videos/generations"), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${config.apiKey}`
+    },
+    body: JSON.stringify({ model: config.videoModel || config.model, prompt, image_url: imageUrl }),
+    signal
+  });
+  if (!response.ok) {
+    throw new Error(`AI 视频生成失败 (${response.status}): ${await readErrorDetail(response)}`);
+  }
+  const data = await response.json();
+  const item = data?.data?.[0] || data;
+  const videoUrl = item?.url || item?.video_url || item?.output?.[0]?.url || "";
+  const jobId = item?.id || data?.id || "";
+  if (!videoUrl && !jobId) throw new Error("AI 视频生成返回为空");
+  return { videoUrl, jobId };
+}
+
 export async function testConnection(config, { fetchImpl, signal } = {}) {
   try {
     const text = await generateText(config, {
@@ -141,7 +222,7 @@ export async function testConnection(config, { fetchImpl, signal } = {}) {
       signal,
       fetchImpl
     });
-    return { ok: true, message: `连接成功：${config.provider} / ${config.model}`, sample: text.slice(0, 40) };
+    return { ok: true, message: `连接成功：${config.providerName || config.provider} / ${config.model || "system"}`, sample: text.slice(0, 40) };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : String(error) };
   }

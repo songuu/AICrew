@@ -1,14 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  agents,
   calculateQualityScore,
   createInitialState,
   createProjectFromTask,
   defaultBrandKit,
   estimateCredits,
   normalizeBrief,
+  orchestratorAgent,
   parseBriefText,
   reviseVariantHook,
+  retryAgentStep,
   runCreativeWorkflow,
   saveSkillFromProject
 } from "../src/domain.js";
@@ -174,4 +177,51 @@ test("initial state contains PRD product surfaces", () => {
   assert.ok(state.assets.length >= 4);
   assert.ok(state.exports.length >= 3);
   assert.ok(state.workspace.credits > 0);
+});
+
+
+test("agent catalog exposes PRD execution contract", () => {
+  assert.equal(orchestratorAgent.id, "orchestrator");
+  assert.match(orchestratorAgent.retryPolicy, /重试/);
+
+  for (const agent of agents) {
+    assert.ok(agent.responsibility, agent.id + " responsibility missing");
+    assert.ok(agent.input, agent.id + " input missing");
+    assert.ok(agent.output, agent.id + " output missing");
+    assert.ok(agent.evaluation, agent.id + " evaluation missing");
+    assert.ok(agent.cost > 0, agent.id + " cost missing");
+    assert.ok(agent.tools.length >= 2, agent.id + " tools missing");
+  }
+});
+
+test("workflow records orchestrator plan and per-agent events", () => {
+  const task = runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "NovaGlow Lamp", platform: "TikTok" }),
+    skillId: "ecom_tiktok_product_ad_v1",
+    brandKit: defaultBrandKit
+  });
+
+  assert.equal(task.orchestrator.id, "orchestrator");
+  assert.deepEqual(task.orchestrator.plan, task.agents.map(agent => agent.id));
+  assert.equal(task.events.length, task.agents.length);
+  assert.ok(task.events.every(event => event.event === "agent_completed"));
+  assert.ok(task.agents.every(agent => agent.artifact && agent.evaluation && agent.tools.length));
+});
+
+test("single agent retry is traceable and billed", () => {
+  const task = runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "NovaGlow Lamp", platform: "TikTok" }),
+    skillId: "ecom_tiktok_product_ad_v1"
+  });
+  const beforeCredits = task.credits.actual;
+  const beforeEvents = task.events.length;
+  const { task: retried, cost } = retryAgentStep(task, "script");
+  const scriptAgent = retried.agents.find(agent => agent.id === "script");
+
+  assert.equal(cost, scriptAgent.cost);
+  assert.equal(scriptAgent.retryCount, 1);
+  assert.equal(retried.credits.actual, beforeCredits + cost);
+  assert.equal(retried.events.length, beforeEvents + 1);
+  assert.equal(retried.events.at(-1).event, "agent_retried");
+  assert.equal(retried.events.at(-1).agentId, "script");
 });

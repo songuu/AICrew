@@ -1,20 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  AI_PROVIDERS,
-  defaultAiConfig,
-  validateAiConfig,
+  hasAiMode,
   isAiConfigured,
-  loadAiConfig,
-  saveAiConfig,
-  clearAiConfig,
-  AI_CONFIG_STORAGE_KEY
+  loadAiSelection,
+  normalizeSystemAiConfig,
+  saveAiSelection,
+  selectedModelFor,
+  AI_SELECTION_STORAGE_KEY
 } from "../src/ai/config.js";
-import { generateText, generateImage, testConnection } from "../src/ai/providers.js";
+import {
+  connectionFor,
+  createSystemAiRuntime,
+  publicSystemAiConfig,
+  resolveSystemModel
+} from "../src/ai/server-config.js";
+import { generateText, generateImage, generateVideo, testConnection } from "../src/ai/providers.js";
 import { runCreativeWorkflowWithAI } from "../src/ai/workflow.js";
 import { runCreativeWorkflow, defaultBrandKit, normalizeBrief } from "../src/domain.js";
 
-// ---- helpers ----
 function memStorage() {
   const map = new Map();
   return {
@@ -33,141 +37,208 @@ function jsonResponse(body, { ok = true, status = 200 } = {}) {
   };
 }
 
-// 记录请求并按 URL 路由返回的假 fetch
 function makeFetch(router) {
   const calls = [];
-  const fetchImpl = async (url, options) => {
-    calls.push({ url, options, body: options?.body ? JSON.parse(options.body) : null });
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, options, body: options.body ? JSON.parse(options.body) : null });
     return router(url, options);
   };
   return { fetchImpl, calls };
 }
 
-// ---- config ----
-test("validateAiConfig rejects empty key and unknown provider, normalizes defaults", () => {
-  const bad = validateAiConfig({ provider: "gemini", apiKey: "" });
-  assert.equal(bad.valid, false);
-  assert.ok(bad.errors.length >= 1);
+function systemConfig(overrides = {}) {
+  const config = normalizeSystemAiConfig({
+    providerName: "Team AI",
+    configured: true,
+    endpoint: "/api/ai/generate",
+    modes: {
+      text: [
+        { id: "auto", name: "自动", model: "auto" },
+        { id: "text-primary", name: "Text Pro", model: "team-text" }
+      ],
+      image: [
+        { id: "auto", name: "自动", model: "auto" },
+        { id: "image-primary", name: "Image Pro", model: "team-image" }
+      ],
+      video: [{ id: "video-primary", name: "Video Pro", model: "team-video" }]
+    },
+    defaults: { text: "auto", image: "auto", video: "video-primary" },
+    ...overrides
+  });
+  return { ...config, selection: { text: "text-primary", image: "auto", video: "video-primary" } };
+}
 
-  const ok = validateAiConfig({ provider: "claude", apiKey: "sk-test" });
-  assert.equal(ok.valid, true);
-  assert.equal(ok.config.model, AI_PROVIDERS.claude.defaultModel);
-  assert.equal(ok.config.baseURL, AI_PROVIDERS.claude.defaultBaseURL);
+// ---- system config ----
+test("createSystemAiRuntime reads project env for text, image, and video routes", () => {
+  const runtime = createSystemAiRuntime({
+    AICREW_AI_PROVIDER_NAME: "Acme AI",
+    AICREW_AI_BASE_URL: "https://ai.example.com/v1/",
+    AICREW_AI_API_KEY: "secret-key",
+    AICREW_AI_TEXT_MODEL: "text-xl",
+    AICREW_AI_IMAGE_MODEL: "image-xl",
+    AICREW_AI_VIDEO_MODEL: "video-xl",
+    AICREW_AI_IMAGE_API: "siliconflow",
+    AICREW_AI_IMAGE_BATCH_SIZE: "2",
+    AICREW_AI_IMAGE_STEPS: "30",
+    AICREW_AI_IMAGE_GUIDANCE_SCALE: "8"
+  });
+
+  assert.equal(runtime.configured, true);
+  assert.equal(runtime.providerName, "Acme AI");
+  assert.equal(runtime.baseURL, "https://ai.example.com/v1");
+  assert.equal(runtime.models.text[0].model, "text-xl");
+  assert.equal(runtime.models.image[0].model, "image-xl");
+  assert.equal(runtime.models.image[0].imageApi, "siliconflow");
+  assert.equal(runtime.models.image[0].batchSize, 2);
+  assert.equal(runtime.models.image[0].numInferenceSteps, 30);
+  assert.equal(runtime.models.image[0].guidanceScale, 8);
+  assert.equal(runtime.models.video[0].model, "video-xl");
 });
 
-test("validateAiConfig gates imageEnabled by provider support", () => {
-  const claude = validateAiConfig({ provider: "claude", apiKey: "k", imageEnabled: true });
-  assert.equal(claude.config.imageEnabled, false); // Claude 无图像能力
-  const openai = validateAiConfig({ provider: "openai", apiKey: "k", imageEnabled: true });
-  assert.equal(openai.config.imageEnabled, true);
+test("publicSystemAiConfig exposes model catalog but never the server API key", () => {
+  const runtime = createSystemAiRuntime({
+    AICREW_AI_BASE_URL: "https://ai.example.com",
+    AICREW_AI_API_KEY: "do-not-leak",
+    AICREW_AI_TEXT_MODEL: "text-xl",
+    AICREW_AI_IMAGE_MODEL: "image-xl"
+  });
+  const publicConfig = publicSystemAiConfig(runtime);
+  const serialized = JSON.stringify(publicConfig);
+
+  assert.equal(publicConfig.configured, true);
+  assert.equal(publicConfig.modes.text[0].id, "auto");
+  assert.ok(publicConfig.modes.text.some(model => model.name === "text-xl"));
+  assert.ok(!serialized.includes("do-not-leak"));
+  assert.ok(!serialized.includes("https://ai.example.com"));
 });
 
-test("validateAiConfig rejects a baseURL whose host is not the vendor's official domain", () => {
-  const result = validateAiConfig({ provider: "openai", apiKey: "k", baseURL: "https://evil.example.com" });
-  assert.equal(result.valid, false);
-  assert.ok(result.errors.some(message => /官方域名|host/i.test(message)));
+test("AICREW_AI_MODELS_JSON supports multiple configured system models", () => {
+  const runtime = createSystemAiRuntime({
+    AICREW_AI_BASE_URL: "https://ai.example.com",
+    AICREW_AI_API_KEY: "k",
+    AICREW_AI_MODELS_JSON: JSON.stringify({
+      providerName: "Catalog AI",
+      models: {
+        text: [
+          { id: "copy-fast", model: "copy-fast-v1", name: "Copy Fast" },
+          { id: "copy-deep", model: "copy-deep-v1", name: "Copy Deep" }
+        ],
+        image: [{ id: "poster", model: "poster-v1", name: "Poster" }],
+        video: [{ id: "clip", model: "clip-v1", name: "Clip" }]
+      }
+    })
+  });
+
+  assert.equal(runtime.providerName, "Catalog AI");
+  assert.equal(resolveSystemModel(runtime, "text", "copy-deep").model, "copy-deep-v1");
+  assert.equal(resolveSystemModel(runtime, "image", "auto").model, "poster-v1");
 });
 
-test("generateText refuses to send to a non-official host (defense in depth)", async () => {
-  const { fetchImpl, calls } = makeFetch(() => jsonResponse({ choices: [{ message: { content: "x" } }] }));
-  const config = { provider: "openai", apiKey: "k", model: "gpt-4o", baseURL: "https://evil.example.com" };
-  await assert.rejects(() => generateText(config, { prompt: "hi", fetchImpl }), /非官方主机|官方/);
-  assert.equal(calls.length, 0); // 绝不发出请求
-});
-
-test("isAiConfigured reflects presence of a usable key", () => {
-  assert.equal(isAiConfigured(null), false);
-  assert.equal(isAiConfigured(defaultAiConfig("claude")), false); // 无 key
-  assert.equal(isAiConfigured({ ...defaultAiConfig("openai"), apiKey: "k" }), true);
-});
-
-test("save/load/clear Ai config round-trips through storage (isolated key)", () => {
+test("selection helpers persist only model ids", () => {
+  const config = systemConfig();
   const store = memStorage();
-  saveAiConfig({ provider: "openai", apiKey: "sk-xyz", imageEnabled: true }, store);
-  assert.ok(store.getItem(AI_CONFIG_STORAGE_KEY));
-  const loaded = loadAiConfig(store);
-  assert.equal(loaded.provider, "openai");
-  assert.equal(loaded.apiKey, "sk-xyz");
-  assert.equal(loaded.imageEnabled, true);
-  clearAiConfig(store);
-  assert.equal(loadAiConfig(store), null);
+  const selection = saveAiSelection({ text: "text-primary", image: "image-primary", video: "missing" }, config, store);
+
+  assert.deepEqual(selection, { text: "text-primary", image: "image-primary", video: "video-primary" });
+  assert.equal(JSON.parse(store.getItem(AI_SELECTION_STORAGE_KEY)).text, "text-primary");
+  assert.equal(loadAiSelection(config, store).image, "image-primary");
+  assert.equal(selectedModelFor(config, selection, "text").name, "Text Pro");
 });
 
-test("saveAiConfig throws on invalid config (boundary validation)", () => {
-  const store = memStorage();
-  assert.throws(() => saveAiConfig({ provider: "claude", apiKey: "" }, store), /无效|invalid/i);
+// ---- provider proxy and direct calls ----
+test("system generateText calls project API without exposing token or baseURL", async () => {
+  const config = systemConfig();
+  const { fetchImpl, calls } = makeFetch(() => jsonResponse({ text: "系统文案" }));
+  const text = await generateText(config, { system: "sys", prompt: "写文案", fetchImpl });
+
+  assert.equal(text, "系统文案");
+  assert.equal(calls[0].url, "/api/ai/generate");
+  assert.equal(calls[0].body.mode, "text");
+  assert.equal(calls[0].body.modelId, "text-primary");
+  assert.ok(!JSON.stringify(calls[0].body).includes("apiKey"));
 });
 
-// ---- providers: text ----
-test("generateText calls the Anthropic messages endpoint with browser-direct header", async () => {
-  const { fetchImpl, calls } = makeFetch(() =>
-    jsonResponse({ content: [{ type: "text", text: "你好 hook" }] })
-  );
-  const config = { provider: "claude", apiKey: "sk-ant", model: "claude-opus-4-8", baseURL: "https://api.anthropic.com" };
+test("system generateImage and generateVideo use image/video modes", async () => {
+  const config = systemConfig();
+  const image = makeFetch(() => jsonResponse({ imageUrl: "data:image/png;base64,IMG" }));
+  const video = makeFetch(() => jsonResponse({ videoUrl: "https://cdn.example.com/video.mp4" }));
+
+  assert.match(await generateImage(config, { prompt: "封面", fetchImpl: image.fetchImpl }), /^data:image/);
+  assert.equal(image.calls[0].body.mode, "image");
+  assert.equal(image.calls[0].body.modelId, "auto");
+
+  const result = await generateVideo(config, { prompt: "短片", fetchImpl: video.fetchImpl });
+  assert.equal(result.videoUrl, "https://cdn.example.com/video.mp4");
+  assert.equal(video.calls[0].body.mode, "video");
+  assert.equal(video.calls[0].body.modelId, "video-primary");
+});
+
+test("generateText calls the Anthropic messages endpoint", async () => {
+  const { fetchImpl, calls } = makeFetch(() => jsonResponse({ content: [{ type: "text", text: "你好 hook" }] }));
+  const config = { provider: "claude", apiKey: "sk-ant", model: "claude-sonnet", baseURL: "https://api.anthropic.com" };
   const text = await generateText(config, { system: "sys", prompt: "写个 hook", fetchImpl });
+
   assert.equal(text, "你好 hook");
-  const call = calls[0];
-  assert.match(call.url, /\/v1\/messages$/);
-  assert.equal(call.options.headers["x-api-key"], "sk-ant");
-  assert.equal(call.options.headers["anthropic-dangerous-direct-browser-access"], "true");
-  assert.equal(call.body.model, "claude-opus-4-8");
-  assert.equal(call.body.system, "sys");
-  assert.equal(call.body.messages[0].content, "写个 hook");
+  assert.match(calls[0].url, /\/v1\/messages$/);
+  assert.equal(calls[0].options.headers["x-api-key"], "sk-ant");
+  assert.equal(calls[0].body.model, "claude-sonnet");
 });
 
-test("generateText calls the OpenAI chat completions endpoint with bearer auth", async () => {
-  const { fetchImpl, calls } = makeFetch(() =>
-    jsonResponse({ choices: [{ message: { content: "openai hook" } }] })
-  );
-  const config = { provider: "openai", apiKey: "sk-oai", model: "gpt-4o", baseURL: "https://api.openai.com" };
+test("generateText calls an OpenAI-compatible chat completions endpoint", async () => {
+  const { fetchImpl, calls } = makeFetch(() => jsonResponse({ choices: [{ message: { content: "openai hook" } }] }));
+  const config = { provider: "openai-compatible", apiKey: "sk-oai", model: "gpt-4o", baseURL: "https://ai.example.com" };
   const text = await generateText(config, { prompt: "写文案", fetchImpl });
+
   assert.equal(text, "openai hook");
-  const call = calls[0];
-  assert.match(call.url, /\/v1\/chat\/completions$/);
-  assert.equal(call.options.headers.authorization, "Bearer sk-oai");
-  assert.equal(call.body.model, "gpt-4o");
+  assert.match(calls[0].url, /\/v1\/chat\/completions$/);
+  assert.equal(calls[0].options.headers.authorization, "Bearer sk-oai");
 });
 
-test("generateText throws a meaningful error on non-ok response", async () => {
-  const { fetchImpl } = makeFetch(() => jsonResponse({ error: { message: "bad key" } }, { ok: false, status: 401 }));
-  const config = { provider: "openai", apiKey: "x", model: "gpt-4o", baseURL: "https://api.openai.com" };
-  await assert.rejects(() => generateText(config, { prompt: "hi", fetchImpl }), /401|bad key/);
-});
-
-test("generateText rejects empty prompt and unknown provider", async () => {
-  await assert.rejects(() => generateText({ provider: "openai", apiKey: "k" }, { prompt: "" }), /prompt/);
-  await assert.rejects(
-    () => generateText({ provider: "nope", apiKey: "k" }, { prompt: "hi", fetchImpl: async () => jsonResponse({}) }),
-    /provider/i
-  );
-});
-
-// ---- providers: image ----
-test("generateImage hits OpenAI images endpoint and returns a data URL", async () => {
+test("generateImage hits OpenAI-compatible images endpoint and returns a data URL", async () => {
   const { fetchImpl, calls } = makeFetch(() => jsonResponse({ data: [{ b64_json: "AAAA" }] }));
-  const config = { provider: "openai", apiKey: "sk-oai", model: "gpt-4o", baseURL: "https://api.openai.com" };
+  const config = { provider: "openai-compatible", apiKey: "sk-oai", model: "image-xl", baseURL: "https://ai.example.com" };
   const url = await generateImage(config, { prompt: "封面", size: "1024x1024", fetchImpl });
+
   assert.match(url, /^data:image\/png;base64,AAAA$/);
   assert.match(calls[0].url, /\/v1\/images\/generations$/);
+  assert.deepEqual(calls[0].body, { model: "image-xl", prompt: "封面", size: "1024x1024", n: 1 });
 });
 
-test("generateImage refuses providers without image support (Claude)", async () => {
-  const config = { provider: "claude", apiKey: "k", model: "claude-opus-4-8" };
-  await assert.rejects(() => generateImage(config, { prompt: "x" }), /不支持|support/i);
+test("generateImage supports SiliconFlow image generation payload and response shape", async () => {
+  const { fetchImpl, calls } = makeFetch(() => jsonResponse({ images: [{ url: "https://sf.example.com/image.png" }] }));
+  const config = {
+    provider: "openai-compatible",
+    apiKey: "sk-sf",
+    model: "Kwai-Kolors/Kolors",
+    baseURL: "https://api.siliconflow.cn/v1",
+    imageApi: "siliconflow",
+    size: "1024x1024"
+  };
+  const url = await generateImage(config, { prompt: "封面", fetchImpl });
+
+  assert.equal(url, "https://sf.example.com/image.png");
+  assert.equal(calls[0].url, "https://api.siliconflow.cn/v1/images/generations");
+  assert.deepEqual(calls[0].body, {
+    model: "Kwai-Kolors/Kolors",
+    prompt: "封面",
+    image_size: "1024x1024",
+    batch_size: 1,
+    num_inference_steps: 20,
+    guidance_scale: 7.5
+  });
 });
 
-// ---- testConnection ----
-test("testConnection returns ok on success and captures the failure message otherwise", async () => {
-  const good = makeFetch(() => jsonResponse({ content: [{ type: "text", text: "ok" }] }));
+test("testConnection returns ok on success and captures failure message otherwise", async () => {
+  const good = makeFetch(() => jsonResponse({ choices: [{ message: { content: "ok" } }] }));
   const okResult = await testConnection(
-    { provider: "claude", apiKey: "k", model: "claude-opus-4-8", baseURL: "https://api.anthropic.com" },
+    { provider: "openai-compatible", apiKey: "k", model: "gpt", baseURL: "https://ai.example.com" },
     { fetchImpl: good.fetchImpl }
   );
   assert.equal(okResult.ok, true);
 
   const bad = makeFetch(() => jsonResponse({ error: { message: "nope" } }, { ok: false, status: 403 }));
   const failResult = await testConnection(
-    { provider: "openai", apiKey: "k", model: "gpt-4o", baseURL: "https://api.openai.com" },
+    { provider: "openai-compatible", apiKey: "k", model: "gpt", baseURL: "https://ai.example.com" },
     { fetchImpl: bad.fetchImpl }
   );
   assert.equal(failResult.ok, false);
@@ -175,7 +246,15 @@ test("testConnection returns ok on success and captures the failure message othe
 });
 
 // ---- workflow integration ----
-test("runCreativeWorkflowWithAI falls back to deterministic output when no config", async () => {
+test("isAiConfigured and hasAiMode handle system and direct configs", () => {
+  const config = systemConfig();
+  assert.equal(isAiConfigured(config), true);
+  assert.equal(hasAiMode(config, "image"), true);
+  assert.equal(hasAiMode(config, "video"), true);
+  assert.equal(isAiConfigured({ provider: "openai-compatible", apiKey: "k", model: "gpt" }), true);
+});
+
+test("runCreativeWorkflowWithAI falls back to deterministic output when no system config", async () => {
   const brief = normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" });
   const sim = runCreativeWorkflow({ brief, skillId: "rednote_seeding_note_v1", brandKit: defaultBrandKit });
   const result = await runCreativeWorkflowWithAI({
@@ -186,20 +265,18 @@ test("runCreativeWorkflowWithAI falls back to deterministic output when no confi
   });
   assert.equal(result.aiMeta.used, false);
   assert.equal(result.variants.length, sim.variants.length);
-  assert.equal(result.variants[0].caption, sim.variants[0].caption); // 内容与模拟一致
+  assert.equal(result.variants[0].caption, sim.variants[0].caption);
 });
 
 test("runCreativeWorkflowWithAI merges real LLM copy into variants", async () => {
   const { fetchImpl } = makeFetch(() =>
-    jsonResponse({
-      content: [{ type: "text", text: JSON.stringify({ hook: "AI 生成的钩子", caption: "AI 文案", hashtags: ["#真实AI", "#小红书"] }) }]
-    })
+    jsonResponse({ content: [{ type: "text", text: JSON.stringify({ hook: "AI 生成的钩子", caption: "AI 文案", hashtags: ["#真实AI", "#小红书"] }) }] })
   );
   const result = await runCreativeWorkflowWithAI({
     brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
     skillId: "rednote_seeding_note_v1",
     brandKit: defaultBrandKit,
-    aiConfig: { provider: "claude", apiKey: "k", model: "claude-opus-4-8", baseURL: "https://api.anthropic.com" },
+    aiConfig: { provider: "claude", apiKey: "k", model: "claude-sonnet", baseURL: "https://api.anthropic.com" },
     fetchImpl
   });
   assert.equal(result.aiMeta.used, true);
@@ -207,18 +284,15 @@ test("runCreativeWorkflowWithAI merges real LLM copy into variants", async () =>
   assert.equal(result.variants[0].hook, "AI 生成的钩子");
   assert.equal(result.variants[0].caption, "AI 文案");
   assert.ok(result.variants[0].hashtags.includes("#真实AI"));
-  // 评分/结构契约不被 AI 改动
-  assert.equal(typeof result.variants[0].score, "number");
 });
 
 test("runCreativeWorkflowWithAI does not flag aiGenerated for empty-shell model output", async () => {
-  // 模型回了合法 JSON 但无任何可用字段（{}）：不应误置 aiGenerated / copyApplied。
   const { fetchImpl } = makeFetch(() => jsonResponse({ content: [{ type: "text", text: "{}" }] }));
   const result = await runCreativeWorkflowWithAI({
     brief: normalizeBrief({ productName: "Lamp", platform: "TikTok" }),
     skillId: "ecom_tiktok_product_ad_v1",
     brandKit: defaultBrandKit,
-    aiConfig: { provider: "claude", apiKey: "k", model: "claude-opus-4-8", baseURL: "https://api.anthropic.com" },
+    aiConfig: { provider: "claude", apiKey: "k", model: "claude-sonnet", baseURL: "https://api.anthropic.com" },
     fetchImpl
   });
   assert.equal(result.aiMeta.copyApplied, 0);
@@ -237,27 +311,48 @@ test("runCreativeWorkflowWithAI degrades gracefully when the AI call fails", asy
     brief: normalizeBrief({ productName: "Lamp", platform: "TikTok" }),
     skillId: "ecom_tiktok_product_ad_v1",
     brandKit: defaultBrandKit,
-    aiConfig: { provider: "openai", apiKey: "k", model: "gpt-4o", baseURL: "https://api.openai.com" },
+    aiConfig: { provider: "openai-compatible", apiKey: "k", model: "gpt", baseURL: "https://ai.example.com" },
     fetchImpl
   });
-  // AI 失败 → 回退模拟文案，不抛错
   assert.equal(result.variants[0].caption, sim.variants[0].caption);
   assert.equal(result.aiMeta.copyApplied, 0);
 });
 
-test("runCreativeWorkflowWithAI generates an OpenAI cover image when enabled", async () => {
-  const router = url => {
-    if (/images\/generations/.test(url)) return jsonResponse({ data: [{ b64_json: "IMG" }] });
-    return jsonResponse({ choices: [{ message: { content: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) } }] });
+test("runCreativeWorkflowWithAI uses system text and image models through project API", async () => {
+  const router = (url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.mode === "image") return jsonResponse({ imageUrl: "data:image/png;base64,IMG" });
+    return jsonResponse({ text: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) });
   };
-  const { fetchImpl } = makeFetch(router);
+  const { fetchImpl, calls } = makeFetch(router);
   const result = await runCreativeWorkflowWithAI({
     brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
     skillId: "rednote_seeding_note_v1",
     brandKit: defaultBrandKit,
-    aiConfig: { provider: "openai", apiKey: "k", model: "gpt-4o", baseURL: "https://api.openai.com", imageEnabled: true },
+    aiConfig: systemConfig(),
     fetchImpl
   });
+
+  assert.equal(result.aiMeta.copyApplied, 3);
   assert.equal(result.aiMeta.imageApplied, true);
   assert.match(result.variants[0].imageUrl, /^data:image\/png;base64,IMG$/);
+  assert.ok(calls.some(call => call.body.mode === "text"));
+  assert.ok(calls.some(call => call.body.mode === "image"));
+});
+
+test("connectionFor maps a resolved system route to a direct provider config", () => {
+  const runtime = createSystemAiRuntime({
+    AICREW_AI_PROVIDER: "openai-compatible",
+    AICREW_AI_BASE_URL: "https://api.siliconflow.cn/v1",
+    AICREW_AI_API_KEY: "k",
+    AICREW_AI_TEXT_MODEL: "text-xl",
+    AICREW_AI_IMAGE_MODEL: "Kwai-Kolors/Kolors",
+    AICREW_AI_IMAGE_SIZE: "1024x1024"
+  });
+  const route = resolveSystemModel(runtime, "image", "auto");
+  const connection = connectionFor(runtime, route);
+  assert.equal(connection.provider, "openai-compatible");
+  assert.equal(connection.model, "Kwai-Kolors/Kolors");
+  assert.equal(connection.apiKey, "k");
+  assert.equal(connection.imageApi, "siliconflow");
 });

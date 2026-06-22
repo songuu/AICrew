@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  agents as agentCatalog,
   buildExportRecord,
   createAsset,
   createInitialState,
@@ -12,21 +13,22 @@ import {
   parseBriefText,
   platformPresets,
   reviseVariantHook,
+  retryAgentStep,
   runCreativeWorkflow,
   saveSkillFromProject,
   skills
 } from "./domain.js";
 import {
-  AI_PROVIDERS,
-  defaultAiConfig,
+  AI_MODE_LABELS,
+  describeSelectedModel,
+  hasAiMode,
   isAiConfigured,
-  loadAiConfig,
-  saveAiConfig,
-  clearAiConfig,
-  validateAiConfig
+  loadAiSelection,
+  normalizeSystemAiConfig,
+  saveAiSelection
 } from "./ai/config.js";
-import { testConnection } from "./ai/providers.js";
 import { runCreativeWorkflowWithAI } from "./ai/workflow.js";
+import { CanvasStudio } from "./canvas/CanvasStudio.jsx";
 
 const storageKey = "aicrew-studio-next-state-v1";
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/aicrew";
@@ -34,6 +36,7 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/aicrew";
 const navItems = [
   ["dashboard", "Dashboard", "◎"],
   ["workbench", "Workbench", "▣"],
+  ["canvas", "Canvas", "◳"],
   ["projects", "Projects", "▤"],
   ["assets", "Assets", "◫"],
   ["skills", "Skills", "✦"],
@@ -57,6 +60,7 @@ const metricLabels = {
 const routeTitles = {
   dashboard: "创作总控台",
   workbench: "AI 创作工作台",
+  canvas: "无限画布",
   projects: "项目",
   assets: "素材库",
   skills: "Skill 模板库",
@@ -112,19 +116,47 @@ function sanitizeStateForStorage(state) {
   return { ...state, tasks: stripList(state.tasks), projects: stripList(state.projects) };
 }
 
+async function fetchSystemAiConfig(fetchImpl = fetch) {
+  const endpoint = `${basePath}/api/ai/generate`;
+  try {
+    const response = await fetchImpl(`${basePath}/api/ai/config`, { cache: "no-store" });
+    if (!response.ok) throw new Error(`系统 AI 配置读取失败 (${response.status})`);
+    const config = normalizeSystemAiConfig({ ...(await response.json()), endpoint });
+    return { ...config, selection: loadAiSelection(config) };
+  } catch (error) {
+    const config = normalizeSystemAiConfig({
+      configured: false,
+      endpoint,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return { ...config, selection: loadAiSelection(config) };
+  }
+}
+
+function aiRuntimeText(aiConfig) {
+  if (!isAiConfigured(aiConfig)) return "未配置系统 AI · 运行模拟";
+  return `${aiConfig.providerName} · ${describeSelectedModel(aiConfig, aiConfig.selection, "text")}`;
+}
+
 export function AICrewStudio({ initialView = "dashboard" }) {
   const [state, setState] = useState(null);
   const [view, setView] = useState(initialView);
   const [selectedVariantId, setSelectedVariantId] = useState(null);
-  // AI 配置独立于主 state：token 只存自己的 localStorage key，绝不进 state blob（防 reset/导出泄漏）。
-  const [aiConfig, setAiConfig] = useState(null);
+  // AI 平台配置来自 server env；浏览器只保存“选择哪个系统模型”的 id，不接收 token/baseURL。
+  const [aiConfig, setAiConfig] = useState(() => normalizeSystemAiConfig());
   const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
+    let alive = true;
     const nextState = readState();
     setState(nextState);
     setSelectedVariantId(nextState.tasks?.[0]?.variants?.[0]?.id || null);
-    setAiConfig(loadAiConfig());
+    fetchSystemAiConfig().then(config => {
+      if (alive) setAiConfig(config);
+    });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -227,14 +259,16 @@ export function AICrewStudio({ initialView = "dashboard" }) {
     runAndCommit(brief, "ecom_tiktok_product_ad_v1", `${brief.productName} quick campaign`, `${brief.productName} quick generation`);
   }
 
-  function saveAi(config) {
-    saveAiConfig(config); // 校验失败会抛错，由面板捕获展示
-    setAiConfig(loadAiConfig());
+  async function refreshAiConfig() {
+    setAiConfig(await fetchSystemAiConfig());
   }
 
-  function clearAi() {
-    clearAiConfig();
-    setAiConfig(null);
+  function updateAiSelection(nextSelection) {
+    setAiConfig(current => {
+      const normalized = normalizeSystemAiConfig(current);
+      const selection = saveAiSelection(nextSelection, normalized);
+      return { ...normalized, selection };
+    });
   }
 
   function updateBrand(event) {
@@ -298,6 +332,52 @@ export function AICrewStudio({ initialView = "dashboard" }) {
         ...current,
         tasks: nextTasks,
         projects: nextProjects
+      };
+    });
+  }
+
+  function retryAgent(agentId) {
+    if (!task) return;
+    const { task: nextTask, cost } = retryAgentStep(task, agentId);
+    setState(current => {
+      const nextTasks = current.tasks.map(item => (item.id === task.id ? nextTask : item));
+      const nextProjects = current.projects.map(item =>
+        item.taskId === task.id
+          ? {
+              ...item,
+              status: nextTask.status,
+              updatedAt: nextTask.updatedAt,
+              qualityScore: nextTask.qa.overallScore
+            }
+          : item
+      );
+      return {
+        ...current,
+        tasks: nextTasks,
+        projects: nextProjects,
+        workspace: {
+          ...current.workspace,
+          credits: Math.max(0, current.workspace.credits - cost)
+        },
+        creditLedger: [
+          {
+            id: makeId("credit"),
+            type: "consume",
+            amount: -cost,
+            label: "Agent retry: " + agentId,
+            createdAt: new Date().toISOString()
+          },
+          ...current.creditLedger
+        ],
+        notifications: [
+          {
+            id: makeId("notice"),
+            level: "success",
+            title: "Agent 已重试：" + agentId,
+            createdAt: new Date().toISOString()
+          },
+          ...current.notifications
+        ]
       };
     });
   }
@@ -373,6 +453,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               navigate={navigate}
               generating={generating}
               aiConfig={aiConfig}
+              onRetryAgent={retryAgent}
             />
           )}
           {view === "workbench" && (
@@ -390,9 +471,13 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               exportVariant={exportVariant}
               generating={generating}
               aiConfig={aiConfig}
+              onRetryAgent={retryAgent}
             />
           )}
-          {view === "settings" && <AiSettings aiConfig={aiConfig} onSave={saveAi} onClear={clearAi} />}
+          {view === "canvas" && <CanvasStudio />}
+          {view === "settings" && (
+            <AiSettings aiConfig={aiConfig} onSelectionChange={updateAiSelection} onRefresh={refreshAiConfig} agentCatalog={agentCatalog} />
+          )}
           {view === "projects" && <Projects state={state} task={task} navigate={navigate} />}
           {view === "assets" && <Assets state={state} addAsset={addAsset} />}
           {view === "skills" && <Skills allSkills={allSkills} />}
@@ -510,6 +595,8 @@ function Topbar({ state, view, navigate, resetDemo }) {
 function FloatingCommandLayer({ state, view, navigate, generating }) {
   const latestTask = state.tasks?.[0];
   const agentsOnline = latestTask?.agents?.length || 0;
+  // 画布视图自带真实工具坞，隐藏全局装饰 dock 避免双坞重叠。
+  if (view === "canvas") return null;
   return (
     <div className="floating-command-layer" aria-hidden={false}>
       <div className="right-tool-rail" aria-label="Quick actions">
@@ -527,15 +614,15 @@ function FloatingCommandLayer({ state, view, navigate, generating }) {
         </button>
       </div>
       <div className="bottom-tool-dock" aria-label="Canvas tools">
-        <button type="button" className={view === "dashboard" ? "active" : ""} onClick={() => navigate("dashboard")}>
+        <button type="button" className={view === "canvas" ? "active" : ""} onClick={() => navigate("canvas")} title="打开无限画布">
           <span>⌖</span>
           <em>选择</em>
         </button>
-        <button type="button" className={view === "workbench" ? "active" : ""} onClick={() => navigate("workbench")}>
+        <button type="button" onClick={() => navigate("canvas")} title="打开无限画布">
           <span>✋</span>
           <em>{generating ? "调度中" : "抓手"}</em>
         </button>
-        <button type="button" onClick={() => navigate("workbench")}>
+        <button type="button" onClick={() => navigate("canvas")} title="打开无限画布">
           <span>▣</span>
           <em>添加</em>
         </button>
@@ -558,7 +645,7 @@ function FloatingCommandLayer({ state, view, navigate, generating }) {
   );
 }
 
-function Dashboard({ state, task, project, generateQuick, navigate, generating, aiConfig }) {
+function Dashboard({ state, task, project, generateQuick, navigate, generating, aiConfig, onRetryAgent }) {
   const completionRate = state.tasks.length
     ? Math.round((state.tasks.filter(item => item.status === "completed").length / state.tasks.length) * 100)
     : 0;
@@ -578,9 +665,7 @@ function Dashboard({ state, task, project, generateQuick, navigate, generating, 
               {generating ? "AI 生成中…" : "Run Agent Team"}
             </button>
             <p className="ai-mode-hint">
-              {isAiConfigured(aiConfig)
-                ? `已接入 ${aiConfig.provider} · ${aiConfig.model}`
-                : "未接入 AI（运行模拟）· 去「AI 接入」配置 token"}
+              {aiRuntimeText(aiConfig)}
             </p>
           </form>
         </div>
@@ -609,7 +694,7 @@ function Dashboard({ state, task, project, generateQuick, navigate, generating, 
             Open workbench
           </button>
         </div>
-        <AgentTimeline task={task} />
+        <AgentTimeline task={task} onRetry={onRetryAgent} />
       </section>
       <section className="panel">
         <div className="panel-heading">
@@ -646,7 +731,8 @@ function Workbench({
   saveCurrentSkill,
   exportVariant,
   generating,
-  aiConfig
+  aiConfig,
+  onRetryAgent
 }) {
   return (
     <div className="workbench-layout">
@@ -712,8 +798,8 @@ function Workbench({
           </button>
           <p className="ai-mode-hint">
             {isAiConfigured(aiConfig)
-              ? `已接入 ${aiConfig.provider} · ${aiConfig.model}${aiConfig.imageEnabled ? " · 封面图开" : ""}`
-              : "未接入 AI（运行模拟）· 去「AI 接入」配置 token"}
+              ? `${aiRuntimeText(aiConfig)}${hasAiMode(aiConfig, "image") ? ` · ${describeSelectedModel(aiConfig, aiConfig.selection, "image")}` : ""}`
+              : "未配置系统 AI · 运行模拟"}
           </p>
         </form>
       </section>
@@ -764,7 +850,7 @@ function Workbench({
           </div>
           <span className="status-chip">{task?.credits.actual || 0} credits</span>
         </div>
-        <AgentTimeline task={task} />
+        <AgentTimeline task={task} onRetry={onRetryAgent} />
         <QaBox task={task} />
       </section>
     </div>
@@ -1065,57 +1151,25 @@ function Onboarding({ state, updateProfile }) {
   );
 }
 
-function AiSettings({ aiConfig, onSave, onClear }) {
-  const [form, setForm] = useState(() => aiConfig || defaultAiConfig("claude"));
-  const [showKey, setShowKey] = useState(false);
-  const [status, setStatus] = useState(null); // null | {testing} | {ok,message}
-  const [note, setNote] = useState("");
-  const meta = AI_PROVIDERS[form.provider] || AI_PROVIDERS.claude;
+function AiSettings({ aiConfig, onSelectionChange, onRefresh, agentCatalog }) {
+  const [mode, setMode] = useState("text");
+  const [refreshing, setRefreshing] = useState(false);
   const configured = isAiConfigured(aiConfig);
+  const modes = aiConfig?.modes || { text: [], image: [], video: [] };
+  const selection = aiConfig?.selection || {};
+  const options = modes[mode] || [];
 
-  function update(patch) {
-    setForm(prev => ({ ...prev, ...patch }));
-    setNote("");
-    setStatus(null);
+  function chooseModel(nextMode, modelId) {
+    onSelectionChange({ ...selection, [nextMode]: modelId });
   }
 
-  function changeProvider(provider) {
-    const next = AI_PROVIDERS[provider] || AI_PROVIDERS.claude;
-    update({
-      provider,
-      model: next.defaultModel,
-      baseURL: next.defaultBaseURL,
-      imageEnabled: next.supportsImage ? form.imageEnabled : false
-    });
-  }
-
-  async function handleTest() {
-    const { valid, errors, config } = validateAiConfig(form);
-    if (!valid) {
-      setStatus({ ok: false, message: errors.join("；") });
-      return;
-    }
-    setStatus({ testing: true });
-    // 用户主动用自己的 key 发起一次真实连通性请求（浏览器直连）。
-    const result = await testConnection(config);
-    setStatus(result);
-  }
-
-  function handleSave(event) {
-    event.preventDefault();
+  async function refresh() {
+    setRefreshing(true);
     try {
-      onSave(form);
-      setNote("已保存到本地浏览器（仅存于此设备）");
-    } catch (error) {
-      setNote(error instanceof Error ? error.message : String(error));
+      await onRefresh();
+    } finally {
+      setRefreshing(false);
     }
-  }
-
-  function handleClear() {
-    onClear();
-    setForm(defaultAiConfig("claude"));
-    setStatus(null);
-    setNote("已清除本地 token");
   }
 
   return (
@@ -1123,107 +1177,110 @@ function AiSettings({ aiConfig, onSave, onClear }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">AI 接入</p>
-            <h3>配置 Claude / OpenAI Token</h3>
+            <p className="eyebrow">AI 平台</p>
+            <h3>系统模型配置</h3>
           </div>
-          <span className={`status-chip ${configured ? "" : "muted"}`}>{configured ? "已接入" : "未接入"}</span>
+          <span className={`status-chip ${configured ? "" : "muted"}`}>{configured ? "系统已接入" : "系统未配置"}</span>
         </div>
-        <form className="brief-form" onSubmit={handleSave}>
-          <label>
-            服务商
-            <select value={form.provider} onChange={event => changeProvider(event.target.value)}>
-              {Object.values(AI_PROVIDERS).map(provider => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            API Token
-            <span className="token-field">
-              <input
-                name="apiKey"
-                type={showKey ? "text" : "password"}
-                autoComplete="off"
-                spellCheck={false}
-                placeholder={meta.id === "claude" ? "sk-ant-..." : "sk-..."}
-                value={form.apiKey}
-                onChange={event => update({ apiKey: event.target.value })}
-              />
-              <button type="button" className="ghost-button slim" onClick={() => setShowKey(value => !value)}>
-                {showKey ? "隐藏" : "显示"}
-              </button>
-            </span>
-          </label>
-          <div className="form-grid">
-            <label>
-              模型
-              <input
-                name="model"
-                list="ai-model-options"
-                value={form.model}
-                onChange={event => update({ model: event.target.value })}
-              />
-              <datalist id="ai-model-options">
-                {meta.models.map(model => (
-                  <option key={model} value={model} />
-                ))}
-              </datalist>
-            </label>
-            <label>
-              Base URL
-              <input name="baseURL" value={form.baseURL} onChange={event => update({ baseURL: event.target.value })} />
-            </label>
-          </div>
-          {meta.supportsImage && (
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={Boolean(form.imageEnabled)}
-                onChange={event => update({ imageEnabled: event.target.checked })}
-              />
-              生成 OpenAI 封面图（额外消耗与时延）
-            </label>
-          )}
-          <div className="toolbar-actions">
-            <button type="button" className="ghost-button" onClick={handleTest} disabled={status?.testing}>
-              {status?.testing ? "测试中…" : "测试连接"}
+        <div className="system-ai-summary">
+          <strong>{aiConfig?.providerName || "AI Platform"}</strong>
+          <span>{configured ? "由项目环境变量提供模型与密钥" : "设置环境变量后重启服务即可启用真实生成"}</span>
+        </div>
+        <div className="model-mode-tabs" role="tablist" aria-label="AI model modes">
+          {Object.entries(AI_MODE_LABELS).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={mode === id ? "active" : ""}
+              onClick={() => setMode(id)}
+              role="tab"
+              aria-selected={mode === id}
+            >
+              {label}
+              <span>{modes[id]?.length || 0}</span>
             </button>
-            <button type="submit" className="primary-button">
-              保存
-            </button>
-            {configured && (
-              <button type="button" className="ghost-button" onClick={handleClear}>
-                清除
+          ))}
+        </div>
+        <div className="system-model-list">
+          {options.length ? (
+            options.map(option => (
+              <button
+                type="button"
+                key={option.id}
+                className={`system-model-card ${selection[mode] === option.id ? "active" : ""}`}
+                onClick={() => chooseModel(mode, option.id)}
+                aria-pressed={selection[mode] === option.id}
+              >
+                <span>
+                  <strong>{option.name}</strong>
+                  <em>{option.description}</em>
+                </span>
+                <i>{selection[mode] === option.id ? "✓" : ""}</i>
               </button>
-            )}
-          </div>
-          {status && !status.testing && (
-            <p className={`ai-status ${status.ok ? "ok" : "fail"}`}>{status.message}</p>
+            ))
+          ) : (
+            <p className="empty-state">未配置{AI_MODE_LABELS[mode]}模型</p>
           )}
-          {note && <p className="ai-status note">{note}</p>}
-        </form>
+        </div>
+        <div className="toolbar-actions">
+          <button type="button" className="ghost-button" onClick={refresh} disabled={refreshing}>
+            {refreshing ? "刷新中…" : "刷新系统配置"}
+          </button>
+        </div>
+        {aiConfig?.error && <p className="ai-status fail">{aiConfig.error}</p>}
       </section>
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">安全须知</p>
-            <h3>Token 如何被处理</h3>
+            <p className="eyebrow">Env Contract</p>
+            <h3>项目级配置</h3>
           </div>
         </div>
         <ul className="security-notes">
-          <li>本应用是纯静态站点（无后端）。Token 仅保存在你当前浏览器的 localStorage，永不上传到任何服务器。</li>
-          <li>生成请求由你的浏览器直接发往 {meta.name} 官方 API，使用你自己的 key、由你自己计费。</li>
-          <li>浏览器直连意味着 key 暴露在前端，存在被恶意脚本（XSS）窃取的风险；请仅在受信任的设备上使用，并优先使用额度受限的 key。</li>
-          <li>Token 不会进入演示数据、不会随导出包外泄、不写入日志。点「清除」可随时移除。</li>
-          <li>未配置 Token 时，平台运行确定性模拟内容，不产生任何外部调用。</li>
+          <li>用户不能输入 token、baseURL 或自定义模型；这些只从服务端环境变量读取。</li>
+          <li>前端只拿到模型名称、说明和选择 id；`AICREW_AI_API_KEY` 不返回浏览器。</li>
+          <li>必填：`AICREW_AI_BASE_URL`、`AICREW_AI_API_KEY`、`AICREW_AI_TEXT_MODEL`。</li>
+          <li>可选：`AICREW_AI_IMAGE_MODEL`、`AICREW_AI_IMAGE_API`、`AICREW_AI_VIDEO_MODEL`、`AICREW_AI_PROVIDER`、`AICREW_AI_MODELS_JSON`。</li>
+          <li>未配置时平台保留确定性模拟，所有生成链路仍可演示。</li>
         </ul>
+      </section>
+      <section className="panel wide agent-settings-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Agent Runtime</p>
+            <h3>Agent 设置与执行契约</h3>
+          </div>
+          <span className="status-chip">{agentCatalog.length} agents</span>
+        </div>
+        <div className="agent-settings-grid">
+          {agentCatalog.map(agent => (
+            <article className="agent-settings-card" key={agent.id} style={{ "--agent": agent.accent }}>
+              <div>
+                <strong>{agent.name}</strong>
+                <span>{agent.responsibility}</span>
+              </div>
+              <dl>
+                <div>
+                  <dt>Input</dt>
+                  <dd>{agent.input}</dd>
+                </div>
+                <div>
+                  <dt>Tools</dt>
+                  <dd>{agent.tools.join(" / ")}</dd>
+                </div>
+                <div>
+                  <dt>Eval</dt>
+                  <dd>{agent.evaluation}</dd>
+                </div>
+              </dl>
+              <em>{agent.cost} credits / retry</em>
+            </article>
+          ))}
+        </div>
       </section>
     </div>
   );
 }
-
 function AuthScreen({ mode, task, onSubmit }) {
   return (
     <main className="auth-screen">
@@ -1267,20 +1324,75 @@ function Metric({ label, value, caption }) {
   );
 }
 
-function AgentTimeline({ task }) {
+function AgentTimeline({ task, onRetry }) {
   if (!task) return <p className="empty-state">No active task</p>;
+  const recentEvents = (task.events || []).slice(-4).reverse();
   return (
-    <div className="agent-rail">
-      {task.agents.map(agent => (
-        <article className="agent-step" key={agent.id} style={{ "--agent": agent.accent }}>
-          <span />
+    <div className="agent-runtime-stack">
+      {task.orchestrator && (
+        <article className="orchestrator-card">
           <div>
-            <strong>{agent.title}</strong>
-            <em>{agent.duration}</em>
-            <p>{agent.summary}</p>
+            <span>ORCH</span>
+            <strong>{task.orchestrator.title}</strong>
+            <p>{task.orchestrator.summary}</p>
           </div>
+          <em>{task.orchestrator.plan?.length || task.agents.length} steps</em>
         </article>
-      ))}
+      )}
+      <div className="agent-rail">
+        {task.agents.map(agent => (
+          <article className="agent-step" key={agent.id} style={{ "--agent": agent.accent }}>
+            <span />
+            <div className="agent-step-body">
+              <div className="agent-step-head">
+                <div>
+                  <strong>{agent.title}</strong>
+                  <em>{agent.duration}{agent.retryCount ? " · retried " + agent.retryCount : ""}</em>
+                </div>
+                {onRetry && (
+                  <button className="ghost-button slim" type="button" onClick={() => onRetry(agent.id)}>
+                    Retry
+                  </button>
+                )}
+              </div>
+              <p>{agent.summary}</p>
+              <details className="agent-details">
+                <summary>查看输入 / 工具 / 评价</summary>
+                <dl>
+                  <div>
+                    <dt>Input</dt>
+                    <dd>{agent.input || "Brief context"}</dd>
+                  </div>
+                  <div>
+                    <dt>Tools</dt>
+                    <dd>{agent.tools?.join(" / ") || "workflow tool"}</dd>
+                  </div>
+                  <div>
+                    <dt>Output</dt>
+                    <dd>{agent.artifact || agent.output}</dd>
+                  </div>
+                  <div>
+                    <dt>Eval</dt>
+                    <dd>{agent.evaluation || "Completed"}</dd>
+                  </div>
+                </dl>
+                <small>{agent.cost || 0} credits · {agent.status}</small>
+              </details>
+            </div>
+          </article>
+        ))}
+      </div>
+      {recentEvents.length > 0 && (
+        <div className="agent-events">
+          {recentEvents.map(event => (
+            <p key={event.id}>
+              <span>{event.event}</span>
+              <strong>{event.agent}</strong>
+              <em>{event.credits} cr</em>
+            </p>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,88 +1,90 @@
-// AI 接入配置：仅存浏览器本地、独立 localStorage key，
-// 永不混入主 state blob、永不写日志、永不硬编码。token 由用户自带、风险自负。
+export const AI_SELECTION_STORAGE_KEY = "aicrew-ai-selection-v1";
 
-export const AI_CONFIG_STORAGE_KEY = "aicrew-ai-config-v1";
+export const AI_MODEL_MODES = ["text", "image", "video"];
 
-// 各 provider 的能力与默认值。新增 provider 只在此登记，调用层一律从这里取数。
-export const AI_PROVIDERS = {
-  claude: {
-    id: "claude",
-    name: "Claude (Anthropic)",
-    defaultModel: "claude-opus-4-8",
-    models: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
-    defaultBaseURL: "https://api.anthropic.com",
-    // baseURL 仅允许官方 host，避免 token 被误配/注入到未知主机外发。
-    hosts: ["api.anthropic.com"],
-    supportsImage: false
-  },
-  openai: {
-    id: "openai",
-    name: "OpenAI",
-    defaultModel: "gpt-4o",
-    models: ["gpt-4o", "gpt-4o-mini", "gpt-4.1"],
-    defaultBaseURL: "https://api.openai.com",
-    hosts: ["api.openai.com"],
-    supportsImage: true,
-    imageModel: "gpt-image-1"
-  }
+export const AI_MODE_LABELS = {
+  text: "文本",
+  image: "图像",
+  video: "视频"
 };
 
-export function listProviders() {
-  return Object.values(AI_PROVIDERS);
+export const AI_MODE_DESCRIPTIONS = {
+  text: "脚本、标题、正文、标签与策略文案",
+  image: "封面、场景图、产品图与视觉方向",
+  video: "图生视频、短片段与动态素材"
+};
+
+const EMPTY_MODES = Object.freeze({ text: [], image: [], video: [] });
+
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
 }
 
-export function defaultAiConfig(provider = "claude") {
-  const meta = AI_PROVIDERS[provider] || AI_PROVIDERS.claude;
+function normalizeModelOption(mode, option, index) {
+  const modelId = String(option?.id || option?.model || `${mode}_${index + 1}`).trim();
+  const modelName = String(option?.name || option?.model || modelId).trim();
   return {
-    provider: meta.id,
-    apiKey: "",
-    model: meta.defaultModel,
-    baseURL: meta.defaultBaseURL,
-    imageEnabled: false
+    id: modelId,
+    mode,
+    name: modelName,
+    model: String(option?.model || modelId).trim(),
+    description: String(option?.description || AI_MODE_DESCRIPTIONS[mode] || "系统模型").trim(),
+    provider: option?.provider ? String(option.provider) : undefined,
+    latency: option?.latency ? String(option.latency) : undefined,
+    cost: option?.cost ? String(option.cost) : undefined,
+    health: Number.isFinite(option?.health) ? option.health : undefined,
+    configured: option?.configured !== false
   };
 }
 
-// 边界校验：不抛，返回 {valid, errors, config(已归一)}，供 UI 友好提示。
-export function validateAiConfig(input = {}) {
-  const errors = [];
-  const meta = AI_PROVIDERS[input.provider];
-  if (!meta) errors.push("未知的 provider（仅支持 claude / openai）");
+function normalizeModeOptions(mode, options = []) {
+  return safeArray(options).map((option, index) => normalizeModelOption(mode, option, index)).filter(option => option.id);
+}
 
-  const apiKey = typeof input.apiKey === "string" ? input.apiKey.trim() : "";
-  if (!apiKey) errors.push("API token 不能为空");
+function firstConfiguredOption(options = []) {
+  return options.find(option => option.configured !== false && option.id !== "auto") || options.find(option => option.configured !== false) || null;
+}
 
-  const model = (typeof input.model === "string" && input.model.trim()) || meta?.defaultModel || "";
-  if (!model) errors.push("model 不能为空");
-
-  const baseURL = (typeof input.baseURL === "string" && input.baseURL.trim()) || meta?.defaultBaseURL || "";
-  let baseOk = false;
-  let host = "";
-  try {
-    const url = new URL(baseURL);
-    host = url.hostname;
-    baseOk = url.protocol === "https:";
-  } catch {
-    baseOk = false;
-  }
-  if (!baseOk) {
-    errors.push("baseURL 必须是合法的 https URL");
-  } else if (meta && Array.isArray(meta.hosts) && !meta.hosts.includes(host)) {
-    // host 锁定：token 只能发往厂商官方域名，杜绝误配/注入导致的 key 外发。
-    errors.push(`baseURL 必须指向 ${meta.name} 官方域名（${meta.hosts.join(" / ")}）`);
-  }
-
-  // 图像开关受 provider 能力约束：Claude 无图像能力，强制为 false。
-  const imageEnabled = Boolean(input.imageEnabled) && Boolean(meta?.supportsImage);
+export function normalizeSystemAiConfig(input = {}) {
+  input = input || {};
+  const rawModes = input.modes || input.models || EMPTY_MODES;
+  const modes = Object.fromEntries(AI_MODEL_MODES.map(mode => [mode, normalizeModeOptions(mode, rawModes[mode])]));
+  const defaults = Object.fromEntries(
+    AI_MODEL_MODES.map(mode => {
+      const configured = firstConfiguredOption(modes[mode]);
+      return [mode, input.defaults?.[mode] || (configured ? "auto" : "")];
+    })
+  );
+  const configured = Boolean(input.configured) && AI_MODEL_MODES.some(mode => Boolean(firstConfiguredOption(modes[mode])));
 
   return {
-    valid: errors.length === 0,
-    errors,
-    config: { provider: meta?.id ?? input.provider, apiKey, model, baseURL, imageEnabled }
+    provider: "system",
+    providerName: input.providerName || "AI Platform",
+    endpoint: input.endpoint || "/api/ai/generate",
+    configured,
+    modes,
+    defaults,
+    error: input.error || ""
   };
 }
 
-export function isAiConfigured(config) {
-  return Boolean(config && AI_PROVIDERS[config.provider] && config.apiKey && config.model);
+export function defaultAiSelection(config) {
+  const normalized = normalizeSystemAiConfig(config);
+  return Object.fromEntries(
+    AI_MODEL_MODES.map(mode => [mode, normalized.defaults[mode] || firstConfiguredOption(normalized.modes[mode])?.id || ""])
+  );
+}
+
+export function normalizeAiSelection(selection = {}, config) {
+  const normalized = normalizeSystemAiConfig(config);
+  const fallback = defaultAiSelection(normalized);
+  return Object.fromEntries(
+    AI_MODEL_MODES.map(mode => {
+      const wanted = selection?.[mode] || fallback[mode];
+      const exists = normalized.modes[mode].some(option => option.id === wanted);
+      return [mode, exists ? wanted : fallback[mode]];
+    })
+  );
 }
 
 function resolveStorage(storage) {
@@ -91,31 +93,56 @@ function resolveStorage(storage) {
   return null;
 }
 
-// 读取并归一；SSR / 无 window / 损坏数据时安全返回 null。
-export function loadAiConfig(storage) {
+export function loadAiSelection(config, storage) {
   const store = resolveStorage(storage);
-  if (!store) return null;
+  if (!store) return defaultAiSelection(config);
   try {
-    const raw = store.getItem(AI_CONFIG_STORAGE_KEY);
-    if (!raw) return null;
-    const { config } = validateAiConfig(JSON.parse(raw));
-    return config;
+    const raw = store.getItem(AI_SELECTION_STORAGE_KEY);
+    return normalizeAiSelection(raw ? JSON.parse(raw) : {}, config);
   } catch {
-    return null;
+    return defaultAiSelection(config);
   }
 }
 
-export function saveAiConfig(config, storage) {
+export function saveAiSelection(selection, config, storage) {
   const store = resolveStorage(storage);
-  if (!store) return false;
-  const { valid, config: normalized, errors } = validateAiConfig(config);
-  if (!valid) throw new Error(`AI 配置无效：${errors.join("；")}`);
-  store.setItem(AI_CONFIG_STORAGE_KEY, JSON.stringify(normalized));
-  return true;
+  const normalized = normalizeAiSelection(selection, config);
+  if (store) store.setItem(AI_SELECTION_STORAGE_KEY, JSON.stringify(normalized));
+  return normalized;
 }
 
-export function clearAiConfig(storage) {
-  const store = resolveStorage(storage);
-  if (!store) return;
-  store.removeItem(AI_CONFIG_STORAGE_KEY);
+export function isAiConfigured(config) {
+  if (config?.provider && config.provider !== "system") {
+    return Boolean(config.apiKey && config.model);
+  }
+  const normalized = normalizeSystemAiConfig(config);
+  return Boolean(normalized.configured && firstConfiguredOption(normalized.modes.text));
+}
+
+export function hasAiMode(config, mode) {
+  if (config?.provider && config.provider !== "system") {
+    if (mode === "text") return isAiConfigured(config);
+    if (mode === "image") return Boolean(isAiConfigured(config) && (config.imageEnabled || config.imageModel));
+    if (mode === "video") return Boolean(isAiConfigured(config) && config.videoModel);
+  }
+  const normalized = normalizeSystemAiConfig(config);
+  return Boolean(normalized.configured && firstConfiguredOption(normalized.modes[mode]));
+}
+
+export function selectedModelFor(config, selection, mode) {
+  if (config?.provider && config.provider !== "system") {
+    const model = mode === "image" ? config.imageModel || config.model : mode === "video" ? config.videoModel || config.model : config.model;
+    return model ? { id: model, mode, name: model, model, provider: config.provider } : null;
+  }
+  const normalized = normalizeSystemAiConfig(config);
+  const normalizedSelection = normalizeAiSelection(selection || config?.selection || {}, normalized);
+  const options = normalized.modes[mode] || [];
+  const selectedId = normalizedSelection[mode] || normalized.defaults[mode];
+  if (selectedId === "auto") return firstConfiguredOption(options);
+  return options.find(option => option.id === selectedId) || firstConfiguredOption(options);
+}
+
+export function describeSelectedModel(config, selection, mode = "text") {
+  const model = selectedModelFor(config, selection, mode);
+  return model ? `${AI_MODE_LABELS[mode]} · ${model.name}` : `${AI_MODE_LABELS[mode]} · 未配置`;
 }

@@ -1,17 +1,18 @@
 # AICrew Studio 部署运行手册
 
-本项目按 `agent-build` 的静态站发布方式部署到同一台生产主机。
+本项目已从纯静态 `out/` 发布切换为 Next server runtime：`/api/ai/config` 与 `/api/ai/generate` 必须在服务端读取项目级 AI 环境变量，不能通过静态文件服务承载。
 
 ## 当前生产目标
 
 | 配置 | 值 |
 |---|---|
-| 部署主机 | `root@47.253.230.197` |
-| web root | `/opt/aicrew/current/out` |
 | base | `/aicrew/` |
 | 域名 | `songuu.top` |
 | 线上入口 | `https://songuu.top/aicrew/` |
 | 根首页入口 | `https://songuu.top/` |
+| Next server | `127.0.0.1:3101` |
+| PM2 应用 | `aicrew-studio` |
+| 当前 server symlink | `/opt/aicrew/current-server` |
 
 ## 本地门禁
 
@@ -21,61 +22,80 @@ npm run build
 npm audit --omit=dev
 ```
 
-`npm run build` 生成 Next 静态导出目录 `out/`，并要求 `out/index.html` 内包含 `/aicrew/_next` 资源前缀，避免线上 assets 404。
+`npm run build` 生成 `.next/` server build，并应包含动态 routes：
 
-## GitHub Actions 自动发布
-
-`main` 分支 push 会触发 `.github/workflows/deploy-aicrew.yml`：
-
-1. `npm ci`
-2. `npm test`
-3. `npm run build`
-4. `npm audit --omit=dev`
-5. 检查 `out/index.html` 与 `/aicrew/_next` 静态资源前缀。
-6. 打包 `out/` 为 `.tgz`。
-7. 通过 SSH 上传到生产主机。
-8. 远端备份旧目录并原子换入新目录。
-9. 验证 loopback 与公网 HTTPS。
-10. 验证 `https://songuu.top/` 根首页仍包含 `AICrew Studio` 入口。
-
-必须配置 GitHub repository secret：
-
-| Secret | 用途 |
-|---|---|
-| `AICREW_SSH_PRIVATE_KEY` | 可登录生产主机的部署私钥 |
-
-可选 secret：
-
-| Secret | 默认值 |
-|---|---|
-| `AICREW_DEPLOY_HOST` | `47.253.230.197` |
-| `AICREW_DEPLOY_USER` | `root` |
-| `AICREW_WEB_ROOT` | `/opt/aicrew/current/out` |
-| `AICREW_DOMAIN` | `songuu.top` |
-
-## 一键部署
-
-```powershell
-pwsh scripts/deploy.ps1
+```text
+ƒ /api/ai/config
+ƒ /api/ai/generate
 ```
 
-脚本流程：
+## AI 环境变量
 
-1. 解析部署参数。
-2. 执行 `npm test`。
-3. 执行 `npm run build`。
-4. 检查 `out/index.html` 的 `/aicrew/_next` base。
-5. 打包 `out/` 为本地临时 `.tgz`。
-6. `scp` 上传到远端 `/tmp`。
-7. 远端解包 stage。
-8. 备份旧目录为 `out.bak.<timestamp>`。
-9. 原子换入新 `out`。
-10. 远端 loopback 验证。
-11. 公网 HTTPS 验证。
+真实 AI 生成配置直接写入项目根目录 `.env`。该文件已被 `.gitignore` 忽略，不能提交真实密钥。
 
-## Nginx 前置条件
+真实 AI 生成至少需要：
 
-生产主机需要包含：
+| 变量 | 用途 |
+|---|---|
+| `AICREW_AI_BASE_URL` | AI 平台或兼容 OpenAI API 的 base URL |
+| `AICREW_AI_API_KEY` | 服务端密钥，不能暴露到浏览器 |
+| `AICREW_AI_TEXT_MODEL` | 文本模型 |
+
+可选：
+
+| 变量 | 用途 |
+|---|---|
+| `AICREW_AI_PROVIDER` | `openai-compatible` / `openai` / `claude` |
+| `AICREW_AI_PROVIDER_NAME` | UI 展示名 |
+| `AICREW_AI_IMAGE_MODEL` | 图像模型 |
+| `AICREW_AI_IMAGE_API` | 图片接口格式：`siliconflow` / `openai`；`api.siliconflow.cn` 会自动识别 |
+| `AICREW_AI_IMAGE_SIZE` | 图像尺寸，默认 `1024x1024` |
+| `AICREW_AI_IMAGE_BATCH_SIZE` | SiliconFlow 出图数量，默认 `1` |
+| `AICREW_AI_IMAGE_STEPS` | SiliconFlow 推理步数，默认 `20` |
+| `AICREW_AI_IMAGE_GUIDANCE_SCALE` | SiliconFlow guidance scale，默认 `7.5` |
+| `AICREW_AI_VIDEO_MODEL` | 视频模型（进入系统选择器） |
+| `AICREW_AI_MODELS_JSON` | 多模型目录 JSON |
+
+示例 `.env`：
+
+```dotenv
+NEXT_PUBLIC_BASE_PATH=/aicrew
+AICREW_AI_PROVIDER=openai-compatible
+AICREW_AI_PROVIDER_NAME=项目 AI 平台
+AICREW_AI_BASE_URL=https://api.siliconflow.cn/v1
+AICREW_AI_API_KEY=sk-project
+AICREW_AI_TEXT_MODEL=deepseek-ai/DeepSeek-V4-Pro
+AICREW_AI_IMAGE_MODEL=Kwai-Kolors/Kolors
+AICREW_AI_IMAGE_API=siliconflow
+AICREW_AI_IMAGE_SIZE=1024x1024
+AICREW_AI_VIDEO_MODEL=video-pro
+```
+
+SiliconFlow 图片生成走 `POST /v1/images/generations`，请求体使用 `image_size` 而不是 OpenAI 的 `size`，响应读取 `images[0].url`。该 URL 有效期为一小时；如后续要长期保存封面，需要增加服务端下载/对象存储步骤。
+
+## Server runtime 发布
+
+生产发布使用 server runtime 脚本，而不是旧 `out/` 静态发布：
+
+```powershell
+pwsh scripts/deploy-server.ps1
+```
+
+发布硬约束：
+
+- 本地项目根目录必须存在 `.env`，且至少包含 `AICREW_AI_BASE_URL`、`AICREW_AI_API_KEY`、`AICREW_AI_TEXT_MODEL`。
+- 脚本会把 `.env` 直接打进 release 包，上传到服务器并落到 `/opt/aicrew/releases/<timestamp>/.env`。
+- 服务器上的 `.env` 权限会设为 `600`；真实密钥不会输出到日志。
+- `current-server` 指向新 release 后，PM2 重启 `aicrew-studio`，Next server 直接从服务器 `.env` 读取配置。
+- 验证会检查 `/aicrew/api/ai/config` 返回 `configured: true`，确认部署后可直接使用系统 AI。
+
+## 运行
+
+```bash
+npm start
+```
+
+Nginx 应反代到 Next server，而不是 alias 静态目录：
 
 ```nginx
 location = /aicrew {
@@ -83,21 +103,28 @@ location = /aicrew {
 }
 
 location /aicrew/ {
-  alias /opt/aicrew/current/out/;
-  try_files $uri $uri/ /aicrew/index.html;
+  proxy_pass http://127.0.0.1:3101/aicrew/;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
 
-## 回滚
+## 静态预览模式
 
-部署成功后脚本输出：
+当前代码包含 `/api/ai/*` 动态 Route Handler，默认发布路径是 Next server runtime。旧静态 `out/` 预览仅适用于临时移除/拆分 API route 后的纯前端预览；否则 `AICREW_STATIC_EXPORT=1 npm run build` 会被 Next 阻止。
 
-```text
-ROLLBACK_BACKUP=/opt/aicrew/current/out.bak.<timestamp>
-```
+静态模式下 `/api/ai/*` 不可用，真实 AI 生成会回退为模拟。
 
-回滚：
+## 当前生产发布状态
 
-```bash
-ssh root@47.253.230.197 'D=/opt/aicrew/current/out; mv "$D" "$D.bad"; mv "$D.bak.<timestamp>" "$D"; nginx -t && systemctl reload nginx'
-```
+2026-06-22 已迁移为 Next server runtime：
+
+- release 目录：`/opt/aicrew/releases/<timestamp>`
+- 当前版本软链：`/opt/aicrew/current-server`
+- 生产环境变量文件：`/opt/aicrew/releases/<timestamp>/.env`
+- PM2 app：`aicrew-studio`
+- Nginx：`/aicrew/` 反代到 `http://127.0.0.1:3101/aicrew/`
+- 最近一次 Nginx 备份：`/etc/nginx/conf.d/default.conf.bak.20260622150236`
+
+旧静态目录 `/opt/aicrew/current/out` 已保留作回滚参考，但不再是线上入口。`scripts/deploy.ps1` 的旧静态发布路径默认禁用，避免误发布旧 `out/`。

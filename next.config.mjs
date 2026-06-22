@@ -1,8 +1,8 @@
-const basePath = "/aicrew";
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/aicrew";
+const staticExport = process.env.AICREW_STATIC_EXPORT === "1";
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: "export",
   basePath,
   assetPrefix: `${basePath}/`,
   trailingSlash: true,
@@ -13,5 +13,9 @@ const nextConfig = {
     NEXT_PUBLIC_BASE_PATH: basePath
   }
 };
+
+if (staticExport) {
+  nextConfig.output = "export";
+}
 
 export default nextConfig;
