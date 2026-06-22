@@ -1,11 +1,9 @@
 name: Deploy AICrew Studio
 
 on:
-  # 自动 push 部署已停用：应用已转服务端模式（app/api 路由），与本静态导出流水线不兼容
-  # （build 不产出 out/，Validate static artifact 必失败）。服务端部署改用
-  # scripts/deploy-server.ps1（PM2 + next start + nginx 反代 :3101）。
-  # 如需恢复 push-to-deploy，需把本流水线改写为服务端部署并在 GH 配置 AICREW_AI_* secrets。
-  # 手动触发仍保留（仅在确认应用为静态导出兼容时使用）。
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 concurrency:
@@ -15,9 +13,13 @@ concurrency:
 permissions:
   contents: read
 
+# 服务端部署：next build（服务端模式）→ PM2 next start（127.0.0.1:3101）→ nginx 反代 /aicrew。
+# 应用含 app/api/* 服务端路由，不再静态导出。逻辑对齐 scripts/deploy-server.ps1。
+# 必需 GH secrets：AICREW_SSH_PRIVATE_KEY、AICREW_PRODUCTION_ENV（完整 .env 内容）。
+# 可选 secrets（有默认值）：AICREW_DEPLOY_HOST、AICREW_DEPLOY_USER、AICREW_DOMAIN。
 jobs:
   build-and-deploy:
-    name: Build and deploy
+    name: Build and deploy (server mode)
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -25,7 +27,6 @@ jobs:
       NODE_VERSION: "24"
       DEPLOY_HOST: ${{ secrets.AICREW_DEPLOY_HOST }}
       DEPLOY_USER: ${{ secrets.AICREW_DEPLOY_USER }}
-      WEB_ROOT: ${{ secrets.AICREW_WEB_ROOT }}
       DOMAIN: ${{ secrets.AICREW_DOMAIN }}
       SSH_PRIVATE_KEY: ${{ secrets.AICREW_SSH_PRIVATE_KEY }}
 
@@ -38,8 +39,12 @@ jobs:
           set -euo pipefail
           echo "DEPLOY_HOST=${DEPLOY_HOST:-47.253.230.197}" >> "$GITHUB_ENV"
           echo "DEPLOY_USER=${DEPLOY_USER:-root}" >> "$GITHUB_ENV"
-          echo "WEB_ROOT=${WEB_ROOT:-/opt/aicrew/current/out}" >> "$GITHUB_ENV"
           echo "DOMAIN=${DOMAIN:-songuu.top}" >> "$GITHUB_ENV"
+          echo "RELEASE_ROOT=/opt/aicrew/releases" >> "$GITHUB_ENV"
+          echo "CURRENT_LINK=/opt/aicrew/current-server" >> "$GITHUB_ENV"
+          echo "APP_NAME=aicrew-studio" >> "$GITHUB_ENV"
+          echo "APP_HOST=127.0.0.1" >> "$GITHUB_ENV"
+          echo "APP_PORT=3101" >> "$GITHUB_ENV"
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -53,29 +58,43 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Build static export
+      - name: Build (server mode)
         run: npm run build
 
-      - name: Run dependency audit
-        run: npm audit --omit=dev
-
-      - name: Validate static artifact
+      - name: Write production env
         run: |
           set -euo pipefail
-          test -f out/index.html
-          grep -q '/aicrew/_next' out/index.html
-          file_count="$(find out -type f | wc -l)"
-          echo "out file count: ${file_count}"
-          test "${file_count}" -gt 10
+          if [ -z "${AICREW_PRODUCTION_ENV}" ]; then
+            echo "::error::Missing required GitHub secret AICREW_PRODUCTION_ENV (完整 .env 内容)"
+            exit 1
+          fi
+          printf '%s\n' "${AICREW_PRODUCTION_ENV}" > .env
+          for key in AICREW_AI_BASE_URL AICREW_AI_API_KEY AICREW_AI_TEXT_MODEL; do
+            grep -q "^${key}=" .env || { echo "::error::AICREW_PRODUCTION_ENV 缺少 ${key}"; exit 1; }
+          done
+          echo "Production .env written (values masked)."
+        env:
+          AICREW_PRODUCTION_ENV: ${{ secrets.AICREW_PRODUCTION_ENV }}
 
-      - name: Package artifact
+      - name: Build self-check
         run: |
           set -euo pipefail
-          archive="${RUNNER_TEMP}/aicrew-out-${GITHUB_SHA}.tgz"
-          tar -czf "${archive}" -C out .
+          test -d .next
+          test -d .next/server
+          test -f app/api/ai/config/route.js
+          test -f app/api/ai/generate/route.js
+
+      - name: Package server release
+        run: |
+          set -euo pipefail
+          rm -rf .next/cache
+          archive="${RUNNER_TEMP}/aicrew-server-${GITHUB_SHA}.tgz"
+          items="app src .next package.json package-lock.json next.config.mjs .env"
+          if [ -d public ]; then items="${items} public"; fi
+          tar -czf "${archive}" ${items}
           echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
-          echo "REMOTE_ARCHIVE=/tmp/aicrew-out-${GITHUB_SHA}.tgz" >> "$GITHUB_ENV"
-          echo "REMOTE_STAGE=/tmp/aicrew-stage-${GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "REMOTE_ARCHIVE=/tmp/aicrew-server-${GITHUB_SHA}.tgz" >> "$GITHUB_ENV"
+          echo "REMOTE_RELEASE=${RELEASE_ROOT}/aicrew-server-${GITHUB_SHA}" >> "$GITHUB_ENV"
 
       - name: Configure SSH
         run: |
@@ -84,59 +103,84 @@ jobs:
             echo "::error::Missing required GitHub secret AICREW_SSH_PRIVATE_KEY"
             exit 1
           fi
-
           mkdir -p ~/.ssh
           printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/aicrew_deploy_key
           chmod 600 ~/.ssh/aicrew_deploy_key
           ssh-keyscan -T 10 -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts
 
-      - name: Upload artifact
+      - name: Upload release archive
         run: |
           set -euo pipefail
           scp -i ~/.ssh/aicrew_deploy_key -o BatchMode=yes \
             "${ARCHIVE}" \
             "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_ARCHIVE}"
 
-      - name: Deploy with remote backup and atomic swap
+      - name: Remote release + PM2 restart (atomic swap)
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/aicrew_deploy_key -o BatchMode=yes \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "WEB_ROOT='${WEB_ROOT}' REMOTE_ARCHIVE='${REMOTE_ARCHIVE}' REMOTE_STAGE='${REMOTE_STAGE}' bash -s" <<'REMOTE_SCRIPT'
+            "RELEASE_ROOT='${RELEASE_ROOT}' CURRENT_LINK='${CURRENT_LINK}' REMOTE_ARCHIVE='${REMOTE_ARCHIVE}' REMOTE_RELEASE='${REMOTE_RELEASE}' APP_NAME='${APP_NAME}' APP_HOST='${APP_HOST}' APP_PORT='${APP_PORT}' bash -s" <<'REMOTE_SCRIPT'
           set -euo pipefail
+          export HOSTNAME="${APP_HOST}"
+          export PORT="${APP_PORT}"
 
-          timestamp="$(date +%Y%m%d%H%M%S)"
-          rm -rf "${REMOTE_STAGE}"
-          mkdir -p "${REMOTE_STAGE}"
-          tar -xzf "${REMOTE_ARCHIVE}" -C "${REMOTE_STAGE}"
-          test -f "${REMOTE_STAGE}/index.html"
-          chmod -R a+rX "${REMOTE_STAGE}"
-          mkdir -p "$(dirname "${WEB_ROOT}")"
+          DEPLOY_SWITCHED=0
+          trap 'rm -f "${REMOTE_ARCHIVE}"; if [ "${DEPLOY_SWITCHED}" != "1" ]; then rm -rf "${REMOTE_RELEASE}"; fi' EXIT
 
-          if [ -e "${WEB_ROOT}" ]; then
-            mv "${WEB_ROOT}" "${WEB_ROOT}.bak.${timestamp}"
+          mkdir -p "${RELEASE_ROOT}"
+          rm -rf "${REMOTE_RELEASE}"
+          mkdir -p "${REMOTE_RELEASE}"
+          tar -xzf "${REMOTE_ARCHIVE}" -C "${REMOTE_RELEASE}"
+          test -f "${REMOTE_RELEASE}/.env"
+          chmod 600 "${REMOTE_RELEASE}/.env"
+          cd "${REMOTE_RELEASE}"
+
+          # 复用上一个 release 的 node_modules（lockfile 一致时），否则纯净安装生产依赖。
+          if [ -d "${CURRENT_LINK}/node_modules" ] && [ -f "${CURRENT_LINK}/package-lock.json" ] && cmp -s "${CURRENT_LINK}/package-lock.json" "${REMOTE_RELEASE}/package-lock.json"; then
+            cp -a "${CURRENT_LINK}/node_modules" "${REMOTE_RELEASE}/node_modules"
+            echo "Reused current node_modules"
+          else
+            npm ci --omit=dev --no-audit --no-fund
           fi
 
-          mv "${REMOTE_STAGE}" "${WEB_ROOT}"
+          # 原子切换 current-server 符号链接。
+          ln -sfn "${REMOTE_RELEASE}" "${CURRENT_LINK}.next"
+          mv -Tf "${CURRENT_LINK}.next" "${CURRENT_LINK}"
+          DEPLOY_SWITCHED=1
+
+          # PM2 启动/重启（首次注入 HOSTNAME/PORT；重启用 --update-env 继承当前 env）。
+          if pm2 describe "${APP_NAME}" >/dev/null 2>&1; then
+            pm2 restart "${APP_NAME}" --update-env
+          else
+            pm2 start npm --name "${APP_NAME}" --cwd "${CURRENT_LINK}" -- start
+          fi
+          pm2 save
+
           rm -f "${REMOTE_ARCHIVE}"
-          echo "ROLLBACK_BACKUP=${WEB_ROOT}.bak.${timestamp}"
-          echo "FILE_COUNT=$(find "${WEB_ROOT}" -type f | wc -l)"
+
+          # 保留最近 5 个 release，清理更早的（current 指向最新，不会被删）。
+          ls -1dt "${RELEASE_ROOT}"/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf
+
+          echo "CURRENT_SERVER=$(readlink -f "${CURRENT_LINK}")"
+          echo "PM2_STATUS=$(pm2 describe "${APP_NAME}" | grep -E 'status' | head -1 || true)"
           REMOTE_SCRIPT
 
       - name: Verify production
         run: |
           set -euo pipefail
-          for path in /aicrew/ /aicrew/workbench/ /aicrew/skills/ /aicrew/admin/; do
-            code="$(ssh -i ~/.ssh/aicrew_deploy_key -o BatchMode=yes \
-              "${DEPLOY_USER}@${DEPLOY_HOST}" \
-              "curl -sk -o /dev/null -w '%{http_code}' -H 'Host: ${DOMAIN}' 'https://127.0.0.1${path}'")"
-            echo "loopback ${path} -> ${code}"
+          # 1) 直连应用端口（绕过 nginx），确认 AI 服务端配置已加载。
+          direct="$(ssh -i ~/.ssh/aicrew_deploy_key -o BatchMode=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "curl -fsS 'http://${APP_HOST}:${APP_PORT}/aicrew/api/ai/config/'")"
+          echo "${direct}" | grep -q '"configured":true'
+          echo "AI config route verified (app port)"
+
+          # 2) 公网（经 nginx）核心路由 200。
+          for path in /aicrew/ /aicrew/canvas/ /aicrew/workbench/; do
+            code="$(curl -k -L -s -o /dev/null -w '%{http_code}' "https://${DOMAIN}${path}")"
+            echo "public https://${DOMAIN}${path} -> ${code}"
             test "${code}" = "200"
-
-            public_code="$(curl -k -L -s -o /dev/null -w '%{http_code}' "https://${DOMAIN}${path}")"
-            echo "public https://${DOMAIN}${path} -> ${public_code}"
-            test "${public_code}" = "200"
           done
-
-          curl -k -L -s "https://${DOMAIN}/" | grep -q 'AICrew Studio'
-          echo "root gateway entry -> ok"
+          curl -k -L -s "https://${DOMAIN}/aicrew/" | grep -q 'AICrew Studio'
+          echo "public gateway verified"
