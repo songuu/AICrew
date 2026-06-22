@@ -98,6 +98,20 @@ function readState() {
   }
 }
 
+// 持久化前剥离 variant.imageUrl：AI 封面（base64 data URL）可能很大且属生成态，
+// 不写入主 blob 可避免 localStorage 配额溢出与图像引用的留存。图仅存于当前会话内存。
+function stripVariantMedia(variant) {
+  if (!variant || !variant.imageUrl) return variant;
+  const { imageUrl, ...rest } = variant;
+  return rest;
+}
+
+function sanitizeStateForStorage(state) {
+  const stripList = list =>
+    (list || []).map(item => (item?.variants ? { ...item, variants: item.variants.map(stripVariantMedia) } : item));
+  return { ...state, tasks: stripList(state.tasks), projects: stripList(state.projects) };
+}
+
 export function AICrewStudio({ initialView = "dashboard" }) {
   const [state, setState] = useState(null);
   const [view, setView] = useState(initialView);
@@ -115,7 +129,11 @@ export function AICrewStudio({ initialView = "dashboard" }) {
 
   useEffect(() => {
     if (!state) return;
-    window.localStorage.setItem(storageKey, JSON.stringify(state));
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(sanitizeStateForStorage(state)));
+    } catch {
+      // 配额超限/序列化失败时静默降级：内存态不受影响，仅本次不落盘。
+    }
   }, [state]);
 
   const task = state?.tasks?.[0];

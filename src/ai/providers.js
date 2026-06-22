@@ -11,7 +11,20 @@ function resolveFetch(fetchImpl) {
 }
 
 function normalizeBase(config, meta) {
-  return (config.baseURL || meta.defaultBaseURL).replace(/\/+$/, "");
+  const base = (config.baseURL || meta.defaultBaseURL).replace(/\/+$/, "");
+  // 发送路径不信任未校验配置：host 不在官方白名单一律拒发，防止 key 外泄。
+  if (Array.isArray(meta.hosts)) {
+    let host = "";
+    try {
+      host = new URL(base).hostname;
+    } catch {
+      host = "";
+    }
+    if (!meta.hosts.includes(host)) {
+      throw new Error(`拒绝向非官方主机发送请求：${host || base}`);
+    }
+  }
+  return base;
 }
 
 // 从厂商错误响应里提取尽量有意义的信息，避免泄漏整段 body 到 UI。

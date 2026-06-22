@@ -62,6 +62,19 @@ test("validateAiConfig gates imageEnabled by provider support", () => {
   assert.equal(openai.config.imageEnabled, true);
 });
 
+test("validateAiConfig rejects a baseURL whose host is not the vendor's official domain", () => {
+  const result = validateAiConfig({ provider: "openai", apiKey: "k", baseURL: "https://evil.example.com" });
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some(message => /官方域名|host/i.test(message)));
+});
+
+test("generateText refuses to send to a non-official host (defense in depth)", async () => {
+  const { fetchImpl, calls } = makeFetch(() => jsonResponse({ choices: [{ message: { content: "x" } }] }));
+  const config = { provider: "openai", apiKey: "k", model: "gpt-4o", baseURL: "https://evil.example.com" };
+  await assert.rejects(() => generateText(config, { prompt: "hi", fetchImpl }), /非官方主机|官方/);
+  assert.equal(calls.length, 0); // 绝不发出请求
+});
+
 test("isAiConfigured reflects presence of a usable key", () => {
   assert.equal(isAiConfigured(null), false);
   assert.equal(isAiConfigured(defaultAiConfig("claude")), false); // 无 key
@@ -196,6 +209,21 @@ test("runCreativeWorkflowWithAI merges real LLM copy into variants", async () =>
   assert.ok(result.variants[0].hashtags.includes("#真实AI"));
   // 评分/结构契约不被 AI 改动
   assert.equal(typeof result.variants[0].score, "number");
+});
+
+test("runCreativeWorkflowWithAI does not flag aiGenerated for empty-shell model output", async () => {
+  // 模型回了合法 JSON 但无任何可用字段（{}）：不应误置 aiGenerated / copyApplied。
+  const { fetchImpl } = makeFetch(() => jsonResponse({ content: [{ type: "text", text: "{}" }] }));
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "Lamp", platform: "TikTok" }),
+    skillId: "ecom_tiktok_product_ad_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: { provider: "claude", apiKey: "k", model: "claude-opus-4-8", baseURL: "https://api.anthropic.com" },
+    fetchImpl
+  });
+  assert.equal(result.aiMeta.copyApplied, 0);
+  assert.equal(result.aiMeta.used, false);
+  assert.ok(!result.variants[0].aiGenerated);
 });
 
 test("runCreativeWorkflowWithAI degrades gracefully when the AI call fails", async () => {

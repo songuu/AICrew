@@ -3,7 +3,7 @@
 //  - 包装而非修改 runCreativeWorkflow —— 评分/结构/导出契约与 13 个 domain 测试不受影响。
 //  - 无 token → 原样回退确定性模拟。
 //  - 任一 AI 调用失败 → 局部回退该 variant 的模拟文案，整体不抛错（aiMeta 记录降级）。
-import { runCreativeWorkflow, findSkill, findPlatformPreset, defaultBrandKit } from "../domain.js";
+import { runCreativeWorkflow, findPlatformPreset, defaultBrandKit } from "../domain.js";
 import { isAiConfigured, AI_PROVIDERS } from "./config.js";
 import { generateText, generateImage } from "./providers.js";
 
@@ -62,21 +62,29 @@ function extractJson(text) {
 }
 
 // 把 AI 文案不可变地合并进 variant；AI 只增强可见文案，不动评分/结构/导出契约。
-function applyAiCopy(variant, aiCopy) {
-  if (!aiCopy) return variant;
-  const hook = typeof aiCopy.hook === "string" && aiCopy.hook.trim() ? aiCopy.hook.trim() : variant.hook;
-  const caption = typeof aiCopy.caption === "string" && aiCopy.caption.trim() ? aiCopy.caption.trim() : variant.caption;
+// 返回 {variant, applied}：仅当至少一个字段真正被 AI 覆盖时 applied=true，
+// 这样空壳 JSON（如 {}）不会误置 aiGenerated 徽标、也不计入 copyApplied。
+function mergeAiCopy(variant, aiCopy) {
+  if (!aiCopy) return { variant, applied: false };
+  const hook = typeof aiCopy.hook === "string" && aiCopy.hook.trim() ? aiCopy.hook.trim() : null;
+  const caption = typeof aiCopy.caption === "string" && aiCopy.caption.trim() ? aiCopy.caption.trim() : null;
   const hashtags =
     Array.isArray(aiCopy.hashtags) && aiCopy.hashtags.length
       ? aiCopy.hashtags.map(tag => String(tag).trim()).filter(Boolean)
-      : variant.hashtags;
+      : null;
+  const applied = Boolean(hook || caption || (hashtags && hashtags.length));
+  if (!applied) return { variant, applied: false };
+  const nextHook = hook || variant.hook;
   return {
-    ...variant,
-    hook,
-    caption,
-    hashtags,
-    aiGenerated: true,
-    timeline: variant.timeline.map((shot, index) => (index === 0 ? { ...shot, action: hook } : shot))
+    variant: {
+      ...variant,
+      hook: nextHook,
+      caption: caption || variant.caption,
+      hashtags: hashtags && hashtags.length ? hashtags : variant.hashtags,
+      aiGenerated: true,
+      timeline: variant.timeline.map((shot, index) => (index === 0 ? { ...shot, action: nextHook } : shot))
+    },
+    applied: true
   };
 }
 
@@ -87,7 +95,6 @@ export async function runCreativeWorkflowWithAI({ brief, skillId, brandKit = def
     return { ...base, aiMeta: { used: false, reason: "no-config" } };
   }
 
-  const skill = findSkill(skillId);
   const preset = findPlatformPreset(base.brief.platform);
   const meta = AI_PROVIDERS[aiConfig.provider];
 
@@ -110,7 +117,8 @@ export async function runCreativeWorkflowWithAI({ brief, skillId, brandKit = def
       })
     );
 
-    let variants = base.variants.map((variant, index) => applyAiCopy(variant, copies[index]));
+    const merged = base.variants.map((variant, index) => mergeAiCopy(variant, copies[index]));
+    let variants = merged.map(item => item.variant);
 
     // 封面图：仅 OpenAI + 已启用 + 首个 variant（控成本）。
     let imageApplied = false;
@@ -131,7 +139,7 @@ export async function runCreativeWorkflowWithAI({ brief, skillId, brandKit = def
       }
     }
 
-    const copyApplied = copies.filter(Boolean).length;
+    const copyApplied = merged.filter(item => item.applied).length;
     return {
       ...base,
       variants,

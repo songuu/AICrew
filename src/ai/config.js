@@ -56,12 +56,20 @@ export function validateAiConfig(input = {}) {
 
   const baseURL = (typeof input.baseURL === "string" && input.baseURL.trim()) || meta?.defaultBaseURL || "";
   let baseOk = false;
+  let host = "";
   try {
-    baseOk = new URL(baseURL).protocol === "https:";
+    const url = new URL(baseURL);
+    host = url.hostname;
+    baseOk = url.protocol === "https:";
   } catch {
     baseOk = false;
   }
-  if (!baseOk) errors.push("baseURL 必须是合法的 https URL");
+  if (!baseOk) {
+    errors.push("baseURL 必须是合法的 https URL");
+  } else if (meta && Array.isArray(meta.hosts) && !meta.hosts.includes(host)) {
+    // host 锁定：token 只能发往厂商官方域名，杜绝误配/注入导致的 key 外发。
+    errors.push(`baseURL 必须指向 ${meta.name} 官方域名（${meta.hosts.join(" / ")}）`);
+  }
 
   // 图像开关受 provider 能力约束：Claude 无图像能力，强制为 false。
   const imageEnabled = Boolean(input.imageEnabled) && Boolean(meta?.supportsImage);
