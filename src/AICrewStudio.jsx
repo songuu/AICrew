@@ -31,6 +31,16 @@ const navItems = [
   ["admin", "Admin", "⌁"]
 ];
 
+const metricLabels = {
+  briefMatch: "Brief match",
+  productVisibility: "Product",
+  hookStrength: "Hook",
+  visualQuality: "Visual",
+  brandConsistency: "Brand",
+  platformFit: "Platform",
+  compliance: "Compliance"
+};
+
 const routeTitles = {
   dashboard: "创作总控台",
   workbench: "AI 创作工作台",
@@ -370,6 +380,7 @@ function Sidebar({ state, view, navigate }) {
 }
 
 function Topbar({ state, view, navigate, resetDemo }) {
+  const liveAgents = state.tasks?.[0]?.agents?.length || 0;
   return (
     <header className="topbar">
       <div>
@@ -377,6 +388,10 @@ function Topbar({ state, view, navigate, resetDemo }) {
         <h1>{routeTitles[view] || "AICrew Studio"}</h1>
       </div>
       <div className="topbar-actions">
+        <div className="system-status" title="Agent runtime status">
+          <i />
+          {liveAgents ? `${liveAgents} agents online` : "runtime ready"}
+        </div>
         <button className="ghost-button" onClick={() => navigate("workbench")}>
           New run
         </button>
@@ -562,6 +577,8 @@ function Workbench({
               key={item.id}
               onClick={() => setSelectedVariantId(item.id)}
               type="button"
+              role="tab"
+              aria-selected={item.id === selectedVariantId}
             >
               <span>{item.name}</span>
               <strong>{item.score}</strong>
@@ -1002,6 +1019,20 @@ function VariantDetail({ variant, reviseHook }) {
         <strong>{variant.caption}</strong>
         <span>{variant.hashtags.join(" ")}</span>
       </div>
+      {variant.metrics && (
+        <div className="metric-bars">
+          <p>Quality telemetry</p>
+          {Object.entries(metricLabels).map(([key, label]) => (
+            <div className="metric-bar" key={key}>
+              <span>{label}</span>
+              <div className="bar">
+                <i style={{ width: `${Math.min(100, variant.metrics[key] || 0)}%` }} />
+              </div>
+              <b>{variant.metrics[key]}</b>
+            </div>
+          ))}
+        </div>
+      )}
       <form className="revision-bar" onSubmit={reviseHook}>
         <input name="instruction" defaultValue="前三秒更强，更直接点出痛点" />
         <button className="ghost-button" type="submit">
