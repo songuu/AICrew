@@ -16,6 +16,17 @@ import {
   saveSkillFromProject,
   skills
 } from "./domain.js";
+import {
+  AI_PROVIDERS,
+  defaultAiConfig,
+  isAiConfigured,
+  loadAiConfig,
+  saveAiConfig,
+  clearAiConfig,
+  validateAiConfig
+} from "./ai/config.js";
+import { testConnection } from "./ai/providers.js";
+import { runCreativeWorkflowWithAI } from "./ai/workflow.js";
 
 const storageKey = "aicrew-studio-next-state-v1";
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/aicrew";
@@ -29,7 +40,8 @@ const navItems = [
   ["brand", "Brand Kit", "◈"],
   ["exports", "Exports", "⇩"],
   ["billing", "Billing", "$"],
-  ["admin", "Admin", "⌁"]
+  ["admin", "Admin", "⌁"],
+  ["settings", "AI 接入", "⚙"]
 ];
 
 const metricLabels = {
@@ -52,6 +64,7 @@ const routeTitles = {
   exports: "导出中心",
   billing: "计费与积分",
   admin: "运营后台",
+  settings: "AI 接入",
   onboarding: "Onboarding",
   login: "Login",
   signup: "Signup"
@@ -89,11 +102,15 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   const [state, setState] = useState(null);
   const [view, setView] = useState(initialView);
   const [selectedVariantId, setSelectedVariantId] = useState(null);
+  // AI 配置独立于主 state：token 只存自己的 localStorage key，绝不进 state blob（防 reset/导出泄漏）。
+  const [aiConfig, setAiConfig] = useState(null);
+  const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
     const nextState = readState();
     setState(nextState);
     setSelectedVariantId(nextState.tasks?.[0]?.variants?.[0]?.id || null);
+    setAiConfig(loadAiConfig());
   }, []);
 
   useEffect(() => {
@@ -146,7 +163,9 @@ export function AICrewStudio({ initialView = "dashboard" }) {
           {
             id: makeId("notice"),
             level: "success",
-            title: `${nextTask.brief.productName} 内容包已生成`,
+            title: `${nextTask.brief.productName} 内容包已生成${
+              nextTask.aiMeta?.used ? `（${nextTask.aiMeta.provider} AI）` : ""
+            }`,
             createdAt: new Date().toISOString()
           },
           ...current.notifications
@@ -157,28 +176,47 @@ export function AICrewStudio({ initialView = "dashboard" }) {
     navigate("workbench");
   }
 
+  // 已配置 AI → 走真实 LLM（+OpenAI 封面图）；否则回退确定性模拟。
+  // runCreativeWorkflowWithAI 内部已兜底，不会抛错；仍以 try/finally 保证 generating 复位。
+  async function runAndCommit(brief, skillId, projectName, creditLabel) {
+    setGenerating(true);
+    try {
+      const nextTask = isAiConfigured(aiConfig)
+        ? await runCreativeWorkflowWithAI({ brief, skillId, brandKit: state.brandKit, aiConfig })
+        : runCreativeWorkflow({ brief, skillId, brandKit: state.brandKit });
+      commitGeneratedTask(nextTask, projectName, creditLabel);
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   function generateFromBrief(event) {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget).entries());
     const brief = normalizeBrief(data);
-    const nextTask = runCreativeWorkflow({
+    runAndCommit(
       brief,
-      skillId: data.skillId || "ecom_tiktok_product_ad_v1",
-      brandKit: state.brandKit
-    });
-    commitGeneratedTask(nextTask, `${brief.productName} ${brief.platform} launch`, `${brief.productName} generation`);
+      data.skillId || "ecom_tiktok_product_ad_v1",
+      `${brief.productName} ${brief.platform} launch`,
+      `${brief.productName} generation`
+    );
   }
 
   function generateQuick(event) {
     event.preventDefault();
     const text = new FormData(event.currentTarget).get("briefText");
     const brief = parseBriefText(text);
-    const nextTask = runCreativeWorkflow({
-      brief,
-      skillId: "ecom_tiktok_product_ad_v1",
-      brandKit: state.brandKit
-    });
-    commitGeneratedTask(nextTask, `${brief.productName} quick campaign`, `${brief.productName} quick generation`);
+    runAndCommit(brief, "ecom_tiktok_product_ad_v1", `${brief.productName} quick campaign`, `${brief.productName} quick generation`);
+  }
+
+  function saveAi(config) {
+    saveAiConfig(config); // 校验失败会抛错，由面板捕获展示
+    setAiConfig(loadAiConfig());
+  }
+
+  function clearAi() {
+    clearAiConfig();
+    setAiConfig(null);
   }
 
   function updateBrand(event) {
@@ -304,12 +342,20 @@ export function AICrewStudio({ initialView = "dashboard" }) {
 
   return (
     <div className="app-shell">
-      <Sidebar state={state} view={view} navigate={navigate} />
+      <Sidebar state={state} view={view} navigate={navigate} aiConfig={aiConfig} />
       <main className="main-surface">
         <Topbar state={state} view={view} navigate={navigate} resetDemo={resetDemo} />
         <section className="page-stack">
           {view === "dashboard" && (
-            <Dashboard state={state} task={task} project={project} generateQuick={generateQuick} navigate={navigate} />
+            <Dashboard
+              state={state}
+              task={task}
+              project={project}
+              generateQuick={generateQuick}
+              navigate={navigate}
+              generating={generating}
+              aiConfig={aiConfig}
+            />
           )}
           {view === "workbench" && (
             <Workbench
@@ -324,8 +370,11 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               addAsset={addAsset}
               saveCurrentSkill={saveCurrentSkill}
               exportVariant={exportVariant}
+              generating={generating}
+              aiConfig={aiConfig}
             />
           )}
+          {view === "settings" && <AiSettings aiConfig={aiConfig} onSave={saveAi} onClear={clearAi} />}
           {view === "projects" && <Projects state={state} task={task} navigate={navigate} />}
           {view === "assets" && <Assets state={state} addAsset={addAsset} />}
           {view === "skills" && <Skills allSkills={allSkills} />}
@@ -336,11 +385,12 @@ export function AICrewStudio({ initialView = "dashboard" }) {
           {view === "onboarding" && <Onboarding state={state} updateProfile={updateProfile} />}
         </section>
       </main>
+      <FloatingCommandLayer state={state} view={view} navigate={navigate} generating={generating} />
     </div>
   );
 }
 
-function Sidebar({ state, view, navigate }) {
+function Sidebar({ state, view, navigate, aiConfig }) {
   const creditRatio = Math.min(100, Math.round((state.workspace.credits / state.workspace.monthlyCredits) * 100));
   return (
     <aside className="sidebar">
@@ -351,6 +401,7 @@ function Sidebar({ state, view, navigate }) {
           <small>Creative OS</small>
         </span>
       </button>
+      <SidebarAssistant state={state} aiConfig={aiConfig} navigate={navigate} />
       <nav className="nav-list" aria-label="Main navigation">
         {navItems.map(([id, label, icon]) => (
           <a
@@ -377,6 +428,36 @@ function Sidebar({ state, view, navigate }) {
         </button>
       </div>
     </aside>
+  );
+}
+
+function SidebarAssistant({ state, aiConfig, navigate }) {
+  const latestTask = state.tasks?.[0];
+  const latestVariant = latestTask?.variants?.[0];
+  return (
+    <section className="assistant-card" aria-label="AI assistant summary">
+      <div className="assistant-head">
+        <span className="assistant-avatar">AI</span>
+        <div>
+          <strong>AICrew Pilot</strong>
+          <small>{isAiConfigured(aiConfig) ? aiConfig.provider + " online" : "simulation runtime"}</small>
+        </div>
+      </div>
+      <div className="assistant-message">
+        <p>
+          输入产品、受众和目标，我会调度脚本、视觉、QA 与导出 agent，生成一组可发布内容包。
+        </p>
+        <div className="assistant-tags">
+          <span>图文</span>
+          <span>视频脚本</span>
+          <span>电商素材</span>
+        </div>
+      </div>
+      <button className="assistant-compose reset-button" onClick={() => navigate("workbench")}>
+        <span>{latestVariant?.score || latestTask?.qa?.overallScore || "GO"}</span>
+        <em>向 AICrew 发送创作任务</em>
+      </button>
+    </section>
   );
 }
 
@@ -408,7 +489,58 @@ function Topbar({ state, view, navigate, resetDemo }) {
   );
 }
 
-function Dashboard({ state, task, project, generateQuick, navigate }) {
+function FloatingCommandLayer({ state, view, navigate, generating }) {
+  const latestTask = state.tasks?.[0];
+  const agentsOnline = latestTask?.agents?.length || 0;
+  return (
+    <div className="floating-command-layer" aria-hidden={false}>
+      <div className="right-tool-rail" aria-label="Quick actions">
+        <button type="button" title="Open workbench" onClick={() => navigate("workbench")}>
+          <span>+</span>
+          <em>生成</em>
+        </button>
+        <button type="button" title="Open assets" onClick={() => navigate("assets")}>
+          <span>□</span>
+          <em>素材</em>
+        </button>
+        <button type="button" title="Open skills" onClick={() => navigate("skills")}>
+          <span>✦</span>
+          <em>技能</em>
+        </button>
+      </div>
+      <div className="bottom-tool-dock" aria-label="Canvas tools">
+        <button type="button" className={view === "dashboard" ? "active" : ""} onClick={() => navigate("dashboard")}>
+          <span>⌖</span>
+          <em>选择</em>
+        </button>
+        <button type="button" className={view === "workbench" ? "active" : ""} onClick={() => navigate("workbench")}>
+          <span>✋</span>
+          <em>{generating ? "调度中" : "抓手"}</em>
+        </button>
+        <button type="button" onClick={() => navigate("workbench")}>
+          <span>▣</span>
+          <em>添加</em>
+        </button>
+        <i />
+        <button type="button" disabled title="Undo">
+          <span>↶</span>
+          <em>撤销</em>
+        </button>
+        <button type="button" disabled title="Redo">
+          <span>↷</span>
+          <em>重做</em>
+        </button>
+      </div>
+      <div className="zoom-dock" aria-label="Canvas status">
+        <span>{agentsOnline} agents</span>
+        <strong>{state.workspace.credits.toLocaleString()}</strong>
+        <em>credits</em>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({ state, task, project, generateQuick, navigate, generating, aiConfig }) {
   const completionRate = state.tasks.length
     ? Math.round((state.tasks.filter(item => item.status === "completed").length / state.tasks.length) * 100)
     : 0;
@@ -424,13 +556,23 @@ function Dashboard({ state, task, project, generateQuick, navigate }) {
               rows="4"
               defaultValue="产品 NovaGlow Lamp，受众 25-38 岁生活方式消费者，目标 推广新品并提升首周转化，TikTok 高级快节奏"
             />
-            <button className="primary-button" type="submit">
-              Run Agent Team
+            <button className="primary-button" type="submit" disabled={generating}>
+              {generating ? "AI 生成中…" : "Run Agent Team"}
             </button>
+            <p className="ai-mode-hint">
+              {isAiConfigured(aiConfig)
+                ? `已接入 ${aiConfig.provider} · ${aiConfig.model}`
+                : "未接入 AI（运行模拟）· 去「AI 接入」配置 token"}
+            </p>
           </form>
         </div>
         <div className="hero-stage">
           <PhonePreview variant={task?.variants?.[0]} size="large" />
+          <div className="runtime-card">
+            <span>LIVE CANVAS</span>
+            <strong>{task?.agents?.length || 0} agent chain</strong>
+            <small>{project?.name || "Awaiting campaign"}</small>
+          </div>
         </div>
       </section>
       <section className="metric-strip">
@@ -484,7 +626,9 @@ function Workbench({
   reviseHook,
   addAsset,
   saveCurrentSkill,
-  exportVariant
+  exportVariant,
+  generating,
+  aiConfig
 }) {
   return (
     <div className="workbench-layout">
@@ -545,9 +689,14 @@ function Workbench({
             <strong>Product asset</strong>
             <span>{state.assets.length} items in library</span>
           </button>
-          <button className="primary-button full" type="submit">
-            Generate Content Pack
+          <button className="primary-button full" type="submit" disabled={generating}>
+            {generating ? "AI 生成中…" : "Generate Content Pack"}
           </button>
+          <p className="ai-mode-hint">
+            {isAiConfigured(aiConfig)
+              ? `已接入 ${aiConfig.provider} · ${aiConfig.model}${aiConfig.imageEnabled ? " · 封面图开" : ""}`
+              : "未接入 AI（运行模拟）· 去「AI 接入」配置 token"}
+          </p>
         </form>
       </section>
       <section className="workspace-canvas">
@@ -898,6 +1047,165 @@ function Onboarding({ state, updateProfile }) {
   );
 }
 
+function AiSettings({ aiConfig, onSave, onClear }) {
+  const [form, setForm] = useState(() => aiConfig || defaultAiConfig("claude"));
+  const [showKey, setShowKey] = useState(false);
+  const [status, setStatus] = useState(null); // null | {testing} | {ok,message}
+  const [note, setNote] = useState("");
+  const meta = AI_PROVIDERS[form.provider] || AI_PROVIDERS.claude;
+  const configured = isAiConfigured(aiConfig);
+
+  function update(patch) {
+    setForm(prev => ({ ...prev, ...patch }));
+    setNote("");
+    setStatus(null);
+  }
+
+  function changeProvider(provider) {
+    const next = AI_PROVIDERS[provider] || AI_PROVIDERS.claude;
+    update({
+      provider,
+      model: next.defaultModel,
+      baseURL: next.defaultBaseURL,
+      imageEnabled: next.supportsImage ? form.imageEnabled : false
+    });
+  }
+
+  async function handleTest() {
+    const { valid, errors, config } = validateAiConfig(form);
+    if (!valid) {
+      setStatus({ ok: false, message: errors.join("；") });
+      return;
+    }
+    setStatus({ testing: true });
+    // 用户主动用自己的 key 发起一次真实连通性请求（浏览器直连）。
+    const result = await testConnection(config);
+    setStatus(result);
+  }
+
+  function handleSave(event) {
+    event.preventDefault();
+    try {
+      onSave(form);
+      setNote("已保存到本地浏览器（仅存于此设备）");
+    } catch (error) {
+      setNote(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function handleClear() {
+    onClear();
+    setForm(defaultAiConfig("claude"));
+    setStatus(null);
+    setNote("已清除本地 token");
+  }
+
+  return (
+    <div className="page-grid two">
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">AI 接入</p>
+            <h3>配置 Claude / OpenAI Token</h3>
+          </div>
+          <span className={`status-chip ${configured ? "" : "muted"}`}>{configured ? "已接入" : "未接入"}</span>
+        </div>
+        <form className="brief-form" onSubmit={handleSave}>
+          <label>
+            服务商
+            <select value={form.provider} onChange={event => changeProvider(event.target.value)}>
+              {Object.values(AI_PROVIDERS).map(provider => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            API Token
+            <span className="token-field">
+              <input
+                name="apiKey"
+                type={showKey ? "text" : "password"}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder={meta.id === "claude" ? "sk-ant-..." : "sk-..."}
+                value={form.apiKey}
+                onChange={event => update({ apiKey: event.target.value })}
+              />
+              <button type="button" className="ghost-button slim" onClick={() => setShowKey(value => !value)}>
+                {showKey ? "隐藏" : "显示"}
+              </button>
+            </span>
+          </label>
+          <div className="form-grid">
+            <label>
+              模型
+              <input
+                name="model"
+                list="ai-model-options"
+                value={form.model}
+                onChange={event => update({ model: event.target.value })}
+              />
+              <datalist id="ai-model-options">
+                {meta.models.map(model => (
+                  <option key={model} value={model} />
+                ))}
+              </datalist>
+            </label>
+            <label>
+              Base URL
+              <input name="baseURL" value={form.baseURL} onChange={event => update({ baseURL: event.target.value })} />
+            </label>
+          </div>
+          {meta.supportsImage && (
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={Boolean(form.imageEnabled)}
+                onChange={event => update({ imageEnabled: event.target.checked })}
+              />
+              生成 OpenAI 封面图（额外消耗与时延）
+            </label>
+          )}
+          <div className="toolbar-actions">
+            <button type="button" className="ghost-button" onClick={handleTest} disabled={status?.testing}>
+              {status?.testing ? "测试中…" : "测试连接"}
+            </button>
+            <button type="submit" className="primary-button">
+              保存
+            </button>
+            {configured && (
+              <button type="button" className="ghost-button" onClick={handleClear}>
+                清除
+              </button>
+            )}
+          </div>
+          {status && !status.testing && (
+            <p className={`ai-status ${status.ok ? "ok" : "fail"}`}>{status.message}</p>
+          )}
+          {note && <p className="ai-status note">{note}</p>}
+        </form>
+      </section>
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">安全须知</p>
+            <h3>Token 如何被处理</h3>
+          </div>
+        </div>
+        <ul className="security-notes">
+          <li>本应用是纯静态站点（无后端）。Token 仅保存在你当前浏览器的 localStorage，永不上传到任何服务器。</li>
+          <li>生成请求由你的浏览器直接发往 {meta.name} 官方 API，使用你自己的 key、由你自己计费。</li>
+          <li>浏览器直连意味着 key 暴露在前端，存在被恶意脚本（XSS）窃取的风险；请仅在受信任的设备上使用，并优先使用额度受限的 key。</li>
+          <li>Token 不会进入演示数据、不会随导出包外泄、不写入日志。点「清除」可随时移除。</li>
+          <li>未配置 Token 时，平台运行确定性模拟内容，不产生任何外部调用。</li>
+        </ul>
+      </section>
+    </div>
+  );
+}
+
 function AuthScreen({ mode, task, onSubmit }) {
   return (
     <main className="auth-screen">
@@ -961,19 +1269,27 @@ function AgentTimeline({ task }) {
 
 function PhonePreview({ variant, size = "" }) {
   const colors = variant?.palette || ["#8bd3ff", "#ff7a90", "#f9c74f"];
+  const imageUrl = variant?.imageUrl;
   return (
     <div className={`phone-preview ${size}`} style={{ "--c1": colors[0], "--c2": colors[1], "--c3": colors[2] }}>
       <div className="phone-top" />
-      <div className="video-frame">
-        <div className="product-plinth">
-          <span />
-          <i />
-        </div>
-        <div className="motion-bars">
-          <b />
-          <b />
-          <b />
-        </div>
+      <div className={`video-frame ${imageUrl ? "has-image" : ""}`}>
+        {imageUrl ? (
+          <img className="ai-cover" src={imageUrl} alt={variant?.name || "AI 封面图"} />
+        ) : (
+          <>
+            <div className="product-plinth">
+              <span />
+              <i />
+            </div>
+            <div className="motion-bars">
+              <b />
+              <b />
+              <b />
+            </div>
+          </>
+        )}
+        {variant?.aiGenerated && <span className="ai-badge">AI</span>}
         <div className="video-copy">
           <strong>{variant?.hook || "Create product videos with your AI crew"}</strong>
           <span>{variant?.cta || "Launch campaign"}</span>

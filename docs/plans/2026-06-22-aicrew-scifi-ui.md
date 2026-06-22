@@ -5,8 +5,8 @@ status: completed
 created: "2026-06-22"
 updated: "2026-06-22"
 checkpoints: 0
-tasks_total: 9
-tasks_completed: 9
+tasks_total: 10
+tasks_completed: 10
 tags: [sprint, ui, redesign, deploy]
 aliases: ["scifi-ui"]
 
@@ -162,3 +162,50 @@ workbench/skills/admin 全 200。
 Goal loop: iter 0/3, until=n/a, goal-met=yes, decision=stop:met
 </content>
 </invoke>
+
+## 追加迭代：RoboNeo Canvas Mode（2026-06-22）
+
+### Phase 1/2：范围与方案
+
+用户反馈：当前界面“不够科幻”，要求继续参照 `www.roboneo.com` 风格和截图。
+
+本轮追加目标：从之前的“Neural Mission Control”进一步收敛到 RoboNeo 式创作画布：
+黑色点阵背景、左侧智能体对话面板、浮动底部工具坞、右侧快捷控制、深色悬浮面板、紫色主动作。
+
+Scope：
+- `AICrewStudio.jsx` additive 增加 `SidebarAssistant`、`FloatingCommandLayer`、`runtime-card`。
+- `styles.css` 追加 `RoboNeo canvas mode override`，不破坏已有业务 selector。
+- 修移动端窄屏 containment，隐藏桌面浮动工具，避免横向裁切。
+
+Non-scope：
+- 不改 domain / AI provider / token 存储逻辑。
+- 不新增依赖，不调用真实外部 AI API。
+- 不部署生产。
+
+### Phase 3：变更日志
+
+- [x] Task 10：RoboNeo Canvas Mode 视觉加强
+  - 左侧 sidebar 改成更像 RoboNeo 的创作对话面板：Pilot 头像、能力标签、发送创作任务入口。
+  - 主画布改为黑色点阵 + 深色浮动面板，降低旧版极光渐变感。
+  - 新增右侧快捷工具 rail、底部工具 dock、右下状态 dock。
+  - Dashboard hero 加 runtime-card，强化 live canvas/agent chain 状态。
+  - 统一面板/卡片 radius 到 8px，修复负 letter-spacing 覆盖。
+  - 移动端补 `max-width: 100vw` containment，隐藏桌面浮动 dock。
+
+### Phase 4：Review
+
+风险等级：L1/L2（视觉结构 + 展示型 JSX）。
+
+验证结果：
+- `npm test`：29/29 pass。
+- `npm run build`：Next.js 16.2.9 build pass，16/16 static pages。
+- 桌面截图：`C:/tmp/aicrew-dashboard-1440.png`，首屏呈现左侧 Pilot 面板、点阵画布、浮动工具坞、右侧工具 rail。
+- 移动截图：`C:/tmp/aicrew-workbench-390.png`，窄屏隐藏浮动 dock，侧栏/导航按两列堆叠。
+
+注意：sandbox 下 `npm test` 曾因 Node child process `spawn EPERM` 失败，`npm run build` 曾因 `.next` unlink `EPERM` 失败；非 sandbox 重跑均通过，判定为环境权限问题，不是代码失败。
+
+### Phase 5：Compound
+
+经验：RoboNeo 参考不是单纯“更多霓虹”，核心是黑色无限点阵画布 + 左侧对话式控制面板 + 浮动工具坞。后续继续迭代时，应优先增强“画布工具感”和“agent 对话输入”，再增加局部动效。
+
+Goal loop: iter 0/3, until=n/a, goal-met=yes, decision=stop:met

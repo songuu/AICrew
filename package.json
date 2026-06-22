@@ -9,7 +9,7 @@
     "build": "next build",
     "start": "next start",
     "serve:out": "node server.mjs out",
-    "test": "node --test tests/domain.test.js"
+    "test": "node --test"
   },
   "dependencies": {
     "next": "^16.2.9",
