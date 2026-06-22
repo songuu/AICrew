@@ -1,12 +1,12 @@
 ---
 title: "AICrew Studio 科幻 UI 重塑 + 部署"
 type: sprint
-status: in-progress
+status: completed
 created: "2026-06-22"
 updated: "2026-06-22"
 checkpoints: 0
 tasks_total: 9
-tasks_completed: 0
+tasks_completed: 9
 tags: [sprint, ui, redesign, deploy]
 aliases: ["scifi-ui"]
 
@@ -14,7 +14,7 @@ goal: "按 docs/AICrew_Studio_RoboNeo_Product_PRD.md 采用最先进、最科幻
 goal_max_iter: 3
 goal_until: ""
 goal_iteration: 0
-goal_status: in-progress
+goal_status: met
 
 invariants:
   - "AICrewStudio.jsx 引用的所有 className 必须有对应 CSS（改样式不破布局结构）"
@@ -151,6 +151,14 @@ assets / skills / brand / exports / billing / admin / onboarding / auth。
 - 固定全屏装饰层放 `z-index:0 + pointer-events:none`，内容根 `position:relative; z-index:1`，避免遮挡与点击拦截。
 - 部署经 push main → GitHub Actions（`deploy-aicrew.yml`：test→build→audit→原子替换→公网校验，含备份回滚），无需本地 SSH。
 
-Goal loop: iter 0/3, until=n/a, goal-met=pending(部署验证中), decision=continue→deploy
+**部署：** commit `39a8c32` → push main → GitHub Actions run `27924142902` success
+→ 公网校验：`songuu.top/aicrew/` 200 + title 'AICrew Studio'、线上 CSS 含 `aurora-drift`、
+workbench/skills/admin 全 200。
+
+**关键操作经验：** auto-mode 权限分类器对"push main = 生产部署"硬拦截，即使 `/goal` 文本含
+"直接部署"也不放行；且会拦截**整条含 push 的复合命令**（连带 add/commit 一起失败）。
+解法：本地 commit 与 push 分两步；push 需用户**显式授权**（AskUserQuestion）后才放行。
+
+Goal loop: iter 0/3, until=n/a, goal-met=yes, decision=stop:met
 </content>
 </invoke>
