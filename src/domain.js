@@ -69,7 +69,7 @@ export const agents = [
     name: "Export Agent",
     title: "导出适配",
     accent: "#93c5fd",
-    output: "TikTok/Reels/Shorts 内容包"
+    output: "TikTok/Reels/Shorts/小红书 内容包"
   }
 ];
 
@@ -121,39 +121,83 @@ export const skills = [
     promise: "生成短剧角色、冲突、分镜和预告片段",
     bestFor: "剧情号、短剧团队",
     palette: ["#ff7a90", "#a78bfa", "#f9c74f"]
+  },
+  {
+    // 小红书生态专属：图文种草，不走视频合成 Agent，输出 3:4 封面 + 笔记正文 + 话题。
+    id: "rednote_seeding_note_v1",
+    name: "小红书种草笔记",
+    category: "社媒种草",
+    stage: "P1",
+    estimatedCredits: 90,
+    formats: ["3:4 封面", "图文笔记", "标题", "话题标签"],
+    agents: ["brief", "strategy", "visual", "copy", "qa", "export"],
+    promise: "从商品卖点生成小红书图文种草笔记（封面 + 正文 + 话题）",
+    bestFor: "美妆、生活方式、母婴、家居品牌与买手",
+    palette: ["#ff7a90", "#ffb86b", "#f9c74f"]
   }
 ];
 
+// 每个平台预设携带其内容生态信号：画幅、Hook 节奏、调性，
+// 以及驱动信用估算与质量分的 creditMultiplier / platformFit。
+// 平台行为一律从这里取数，避免在业务逻辑里散落 `=== "TikTok"` 这类硬编码分支。
 export const platformPresets = [
   {
     id: "tiktok",
     name: "TikTok",
     ratio: "9:16",
     hookSeconds: 3,
-    tone: "快节奏、强 Hook、直接 CTA"
+    tone: "快节奏、强 Hook、直接 CTA",
+    creditMultiplier: 1,
+    platformFit: 92
   },
   {
     id: "reels",
     name: "Instagram Reels",
     ratio: "9:16",
     hookSeconds: 3,
-    tone: "视觉高级、情绪化、轻量 CTA"
+    tone: "视觉高级、情绪化、轻量 CTA",
+    creditMultiplier: 0.92,
+    platformFit: 86
   },
   {
     id: "shorts",
     name: "YouTube Shorts",
     ratio: "9:16",
     hookSeconds: 5,
-    tone: "问题驱动、信息密度高、强保留"
+    tone: "问题驱动、信息密度高、强保留",
+    creditMultiplier: 0.92,
+    platformFit: 86
   },
   {
     id: "shopify",
     name: "Shopify PDP",
     ratio: "1:1",
     hookSeconds: 4,
-    tone: "卖点清晰、信任背书、促销明确"
+    tone: "卖点清晰、信任背书、促销明确",
+    creditMultiplier: 0.92,
+    platformFit: 86
+  },
+  {
+    // 小红书：图文种草为主，3:4 竖图封面驱动，调性真诚轻软广。
+    id: "rednote",
+    name: "小红书",
+    ratio: "3:4",
+    hookSeconds: 2,
+    tone: "真诚种草、生活方式、封面强吸引、轻软广",
+    creditMultiplier: 0.9,
+    platformFit: 88
   }
 ];
+
+// 按 name / id 解析平台预设，找不到回退到第一个（TikTok），供全链路统一取数。
+export function findPlatformPreset(platform = "") {
+  const value = String(platform).toLowerCase();
+  return (
+    platformPresets.find(
+      item => item.name === platform || item.name.toLowerCase() === value || item.id === value
+    ) || platformPresets[0]
+  );
+}
 
 export const defaultBrandKit = {
   name: "NovaGlow",
@@ -274,8 +318,7 @@ export function createAsset(type, name, source = "upload", tags = []) {
 }
 
 export function normalizeBrief(input = {}) {
-  const platform = input.platform || "TikTok";
-  const preset = platformPresets.find(item => item.name === platform || item.id === platform.toLowerCase()) || platformPresets[0];
+  const preset = findPlatformPreset(input.platform || "TikTok");
   return {
     productName: input.productName?.trim() || "Untitled Product",
     sellingPoints: input.sellingPoints?.trim() || "省时、高质、可规模化生产内容",
@@ -289,6 +332,18 @@ export function normalizeBrief(input = {}) {
   };
 }
 
+// 从自由文本中识别目标平台。用专属 token 匹配，避免 "red"/"ins" 等子串误命中。
+function detectPlatform(text = "") {
+  const lower = text.toLowerCase();
+  if (text.includes("小红书") || lower.includes("xiaohongshu") || lower.includes("rednote") || lower.includes("xhs")) {
+    return "小红书";
+  }
+  if (lower.includes("reels") || lower.includes("instagram")) return "Instagram Reels";
+  if (lower.includes("shorts") || lower.includes("youtube")) return "YouTube Shorts";
+  if (lower.includes("shopify") || text.includes("详情页")) return "Shopify PDP";
+  return "TikTok";
+}
+
 export function parseBriefText(text = "") {
   const compact = text.replace(/\s+/g, " ").trim();
   const productMatch = compact.match(/(?:产品|商品|product)[:：]?\s*([^,，。.;；]+)/i);
@@ -299,21 +354,29 @@ export function parseBriefText(text = "") {
     sellingPoints: compact || "上传商品图后生成广告视频、封面和文案",
     targetAudience: audienceMatch?.[1] || "跨境电商卖家",
     goal: goalMatch?.[1] || "提升广告点击与转化",
-    platform: compact.toLowerCase().includes("reels") ? "Instagram Reels" : "TikTok",
+    platform: detectPlatform(compact),
     style: compact.includes("高级") ? "高级、干净、强品牌感" : "快节奏、强 Hook、明亮"
   });
 }
 
+// 交付物是否为视频，取决于 skill 是否编排了 video Agent。
+// 图文型 skill（小红书种草、产品摄影、社媒包）据此切换产出格式与成本结构。
+export function isVideoSkill(skill) {
+  return skill.agents.includes("video");
+}
+
 export function estimateCredits(brief, skillId) {
   const skill = findSkill(skillId);
-  const platformMultiplier = brief.platform === "TikTok" ? 1 : 0.92;
+  const platformMultiplier = findPlatformPreset(brief.platform).creditMultiplier;
   const complexity = Math.min(1.35, 1 + brief.sellingPoints.length / 260);
   const estimated = Math.round(skill.estimatedCredits * platformMultiplier * complexity);
+  // 无视频合成时把视频算力份额转入图像生成，保持各档之和不变。
+  const hasVideo = isVideoSkill(skill);
   return {
     estimated,
     llm: Math.round(estimated * 0.14),
-    image: Math.round(estimated * 0.26),
-    video: Math.round(estimated * 0.48),
+    image: Math.round(estimated * (hasVideo ? 0.26 : 0.74)),
+    video: hasVideo ? Math.round(estimated * 0.48) : 0,
     qa: Math.round(estimated * 0.04),
     export: Math.max(6, Math.round(estimated * 0.08))
   };
@@ -335,7 +398,7 @@ export function runCreativeWorkflow({ brief, skillId, brandKit = defaultBrandKit
     };
   });
   const variants = buildVariants(normalizedBrief, brandKit, skill);
-  const qa = buildQaReport(normalizedBrief, variants, brandKit);
+  const qa = buildQaReport(normalizedBrief, variants, brandKit, skill);
   return {
     id: makeId("task"),
     status: "completed",
@@ -349,7 +412,7 @@ export function runCreativeWorkflow({ brief, skillId, brandKit = defaultBrandKit
       ...credits,
       actual: Math.max(24, Math.round(credits.estimated * 0.94))
     },
-    exports: buildExports(normalizedBrief, variants),
+    exports: buildExports(normalizedBrief, variants, skill),
     createdAt: now(),
     updatedAt: now()
   };
@@ -418,7 +481,7 @@ export function buildExportRecord(project, variant, platform = "TikTok") {
     variantId: variant.id,
     name: `${project.name} / ${variant.name}`,
     platform,
-    files: ["video.mp4", "cover.png", "copy.md", "storyboard.csv"],
+    files: exportFilesFor(findSkill(project.skillId)),
     status: "ready",
     createdAt: now()
   };
@@ -446,21 +509,24 @@ export function findSkill(skillId) {
 }
 
 function buildAgentSummary(agentId, brief, brandKit) {
+  const preset = findPlatformPreset(brief.platform);
   const summaries = {
     brief: `已结构化 ${brief.productName} 的目标、受众、平台和卖点。`,
-    strategy: `主轴：${brief.goal}；面向 ${brief.targetAudience} 强化首 3 秒 Hook。`,
+    strategy: `主轴：${brief.goal}；面向 ${brief.targetAudience} 强化首 ${preset.hookSeconds} 秒 Hook。`,
     script: `生成 3 个脚本方向：痛点开场、场景反差、促销冲刺。`,
     storyboard: `拆成 5 个镜头，保持产品露出和 CTA。`,
     visual: `套用 ${brandKit.name} 色彩和 ${brief.style} 视觉语言。`,
-    video: `模拟 15 秒竖版内容，适配 ${brief.platform}。`,
+    video: `模拟 15 秒${preset.ratio === "1:1" ? "方形" : "竖版"}内容，适配 ${brief.platform}。`,
     copy: `生成标题、Caption、Hashtag 和 CTA。`,
     qa: `检查品牌一致性、平台适配和违规词。`,
-    export: `打包 9:16 MP4、封面 PNG、文案 Markdown。`
+    export: `打包 ${preset.ratio} 主视觉、封面 PNG、文案 Markdown。`
   };
   return summaries[agentId] || "完成工作流步骤。";
 }
 
 function buildVariants(brief, brandKit, skill) {
+  const preset = findPlatformPreset(brief.platform);
+  const hasVideo = isVideoSkill(skill);
   const angles = [
     {
       name: "Painkiller Hook",
@@ -492,7 +558,7 @@ function buildVariants(brief, brandKit, skill) {
       hookStrength: 82 + item.scoreBoost + index,
       visualQuality: 84 + index * 3,
       brandConsistency: 90,
-      platformFit: brief.platform === "TikTok" ? 92 : 86,
+      platformFit: preset.platformFit,
       compliance: 94
     };
     return {
@@ -504,12 +570,12 @@ function buildVariants(brief, brandKit, skill) {
       caption: `${brief.productName} for ${brief.targetAudience}. ${brief.sellingPoints}.`,
       hashtags: ["#AICrewStudio", "#ProductAd", `#${brief.platform.replace(/\s+/g, "")}`],
       cta: item.cta,
-      duration: 15,
-      aspectRatio: "9:16",
+      duration: hasVideo ? 15 : null,
+      aspectRatio: preset.ratio,
       score: calculateQualityScore(metrics),
       palette: skill.palette,
       brand: brandKit.name,
-      timeline: buildStoryboard(brief, item),
+      timeline: hasVideo ? buildStoryboard(brief, item) : buildNoteStructure(brief, item),
       metrics
     };
   });
@@ -550,18 +616,57 @@ function buildStoryboard(brief, angle) {
   ];
 }
 
-function buildQaReport(brief, variants, brandKit) {
+// 图文笔记结构：复用 storyboard 的 {time, shot, action, caption} 形状（slot 标签替代时间码），
+// 让前端 storyboard-list 无需改动即可渲染封面 + 正文段 + 话题收尾。
+function buildNoteStructure(brief, angle) {
+  return [
+    {
+      time: "封面",
+      shot: "Cover",
+      action: angle.hook,
+      caption: "封面强吸引"
+    },
+    {
+      time: "正文 1",
+      shot: "种草点",
+      action: `分享 ${brief.productName} 如何解决 ${brief.targetAudience} 的痛点。`,
+      caption: "Pain → 种草"
+    },
+    {
+      time: "正文 2",
+      shot: "场景",
+      action: `把 ${brief.productName} 放进真实生活场景，突出 ${brief.sellingPoints}。`,
+      caption: "场景体验"
+    },
+    {
+      time: "正文 3",
+      shot: "细节",
+      action: `近景细节图配真实使用感受，建立信任。`,
+      caption: "信任背书"
+    },
+    {
+      time: "结尾",
+      shot: "话题",
+      action: `${angle.cta}，引导收藏与关注。`,
+      caption: "话题 + CTA"
+    }
+  ];
+}
+
+function buildQaReport(brief, variants, brandKit, skill) {
   const average = Math.round(variants.reduce((sum, item) => sum + item.score, 0) / variants.length);
   const forbiddenHits = brandKit.forbiddenWords.filter(word => {
     const haystack = `${brief.sellingPoints} ${variants.map(item => item.caption).join(" ")}`.toLowerCase();
     return haystack.includes(word.toLowerCase());
   });
+  // 图文型平台没有视频 Hook，质检项相应改为封面/标题吸引力。
+  const hookLabel = skill && !isVideoSkill(skill) ? "封面/标题吸引力" : "Hook strength";
   return {
     overallScore: forbiddenHits.length ? Math.min(average, 72) : average,
     checks: [
       { label: "Brief match", status: "pass", score: 88 },
       { label: "Product visibility", status: "pass", score: 87 },
-      { label: "Hook strength", status: "pass", score: 85 },
+      { label: hookLabel, status: "pass", score: 85 },
       { label: "Brand consistency", status: "pass", score: 90 },
       { label: "Compliance", status: forbiddenHits.length ? "warning" : "pass", score: forbiddenHits.length ? 72 : 94 }
     ],
@@ -572,12 +677,20 @@ function buildQaReport(brief, variants, brandKit) {
   };
 }
 
-function buildExports(brief, variants) {
+// 导出文件清单随交付物类型切换：视频包 vs 图文笔记包。
+export function exportFilesFor(skill) {
+  return isVideoSkill(skill)
+    ? ["video.mp4", "cover.png", "copy.md", "storyboard.csv"]
+    : ["cover.png", "note.md", "copy.md", "hashtags.txt"];
+}
+
+function buildExports(brief, variants, skill) {
+  const files = exportFilesFor(skill);
   return variants.map(variant => ({
     name: `${brief.productName} / ${variant.name}`,
     platform: brief.platform,
     variantId: variant.id,
     status: "ready",
-    files: ["video.mp4", "cover.png", "copy.md", "storyboard.csv"]
+    files
   }));
 }

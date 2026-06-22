@@ -104,6 +104,68 @@ test("quality score follows PRD weighted formula", () => {
   assert.equal(score, 88);
 });
 
+test("supports 小红书 platform across the ecosystem", () => {
+  const brief = normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" });
+  assert.equal(brief.platform, "小红书");
+
+  const task = runCreativeWorkflow({
+    brief,
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit
+  });
+
+  assert.equal(task.skillName, "小红书种草笔记");
+  assert.equal(task.variants[0].aspectRatio, "3:4");
+  assert.ok(task.variants[0].hashtags.includes("#小红书"));
+  assert.ok(task.qa.overallScore >= 80);
+});
+
+test("image-first 小红书 note delivers image artifacts, not a video pack", () => {
+  const task = runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit
+  });
+
+  // 交付物不应包含视频文件，且应是图文笔记结构而非时间码分镜
+  const files = task.exports[0].files;
+  assert.ok(!files.includes("video.mp4"));
+  assert.ok(files.includes("note.md"));
+  assert.equal(task.variants[0].duration, null);
+  assert.equal(task.variants[0].timeline[0].time, "封面");
+  // 图文型不计视频算力
+  assert.equal(task.credits.video, 0);
+  // QA 改用封面/标题吸引力而非视频 Hook
+  assert.ok(task.qa.checks.some(check => check.label === "封面/标题吸引力"));
+});
+
+test("video skills still deliver a video pack", () => {
+  const task = runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "NovaGlow Lamp", platform: "TikTok" }),
+    skillId: "ecom_tiktok_product_ad_v1",
+    brandKit: defaultBrandKit
+  });
+
+  assert.ok(task.exports[0].files.includes("video.mp4"));
+  assert.equal(task.variants[0].duration, 15);
+  assert.ok(task.credits.video > 0);
+});
+
+test("Shopify PDP variants use the 1:1 preset ratio", () => {
+  const task = runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "Desk Pad", platform: "Shopify PDP" }),
+    skillId: "ecom_tiktok_product_ad_v1",
+    brandKit: defaultBrandKit
+  });
+
+  assert.equal(task.variants[0].aspectRatio, "1:1");
+});
+
+test("detects 小红书 platform from freeform brief", () => {
+  const brief = parseBriefText("产品 玻尿酸面膜，受众 抗老人群，目标 提升收藏，小红书 种草风格");
+  assert.equal(brief.platform, "小红书");
+});
+
 test("initial state contains PRD product surfaces", () => {
   const state = createInitialState();
 

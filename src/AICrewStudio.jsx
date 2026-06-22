@@ -10,6 +10,7 @@ import {
   modelRoutes,
   normalizeBrief,
   parseBriefText,
+  platformPresets,
   reviseVariantHook,
   runCreativeWorkflow,
   saveSkillFromProject,
@@ -512,8 +513,10 @@ function Workbench({
             <label>
               平台
               <select name="platform" defaultValue={task?.brief.platform || "TikTok"}>
-                {["TikTok", "Instagram Reels", "YouTube Shorts", "Shopify PDP"].map(name => (
-                  <option key={name}>{name}</option>
+                {platformPresets.map(preset => (
+                  <option key={preset.id} value={preset.name}>
+                    {preset.name}
+                  </option>
                 ))}
               </select>
             </label>
@@ -745,7 +748,7 @@ function Exports({ state }) {
         <div className="export-grid">
           {state.exports.map(item => (
             <article className="export-card" key={item.id}>
-              <div className="export-icon">MP4</div>
+              <div className="export-icon">{item.files.some(file => file.endsWith(".mp4")) ? "MP4" : "IMG"}</div>
               <strong>{item.name}</strong>
               <span>
                 {item.platform} · {item.files.join(" / ")}
