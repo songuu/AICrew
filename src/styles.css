@@ -3781,29 +3781,66 @@ body::after {
   white-space: nowrap;
 }
 
-/* —— 档位切换 —— */
-.oc-modes {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  padding: 6px;
-  border-radius: var(--radius);
-  border: 1px solid var(--line);
-  background: var(--surface-2);
-}
+/* ========= Hero 模式选择器：Plasma Rail Segmented Control =========
+   核心控件——「一个 Flow，三种创作方式」。从低对比小 toggle 升级为带边框 + 辉光的
+   仪表卡片；行内 active 段自展开吸收余宽，替代窄列里 3×1fr 的拥挤。 */
 
-.oc-mode {
+/* 仪表卡片外框：建立 hero 体量，与普通面板区分 */
+.oc-mode-block {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  padding: 10px 6px;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-2);
+  box-shadow: var(--glow-violet), inset 0 0 22px rgba(124, 92, 255, 0.08);
+}
+
+.oc-mode-block .oc-head {
+  margin-bottom: 2px;
+}
+
+.oc-mode-eyebrow {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+
+/* 行：flex 而非 3×1fr grid —— 解决窄列拥挤的结构性关键。
+   idle 段贴内容收缩 (~64–78px)，active 段吸收剩余宽度，任意时刻只有一段需要大空间。 */
+.oc-modes {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  padding: 4px;
   border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+}
+
+/* 段：active 段本身即选中指示器（填充 / 描边 / 辉光锚定真实 DOM 盒，永不漂移） */
+.oc-mode {
+  position: relative;
+  flex: 0 0 auto;            /* idle：贴内容收缩 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 9px 12px;
+  border-radius: 8px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  transition: all 0.3s var(--ease);
+  white-space: nowrap;
+  transition: flex-grow 0.42s var(--ease), color 0.3s var(--ease),
+    background 0.42s var(--ease), border-color 0.42s var(--ease),
+    box-shadow 0.42s var(--ease);
 }
 
 .oc-mode:hover {
@@ -3811,50 +3848,127 @@ body::after {
   background: var(--glass);
 }
 
+.oc-mode:focus-visible {
+  outline: none;
+  border-color: var(--seg-accent, var(--cyan));
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--seg-accent, var(--cyan));
+}
+
 .oc-mode.active {
+  flex: 1 1 auto;            /* active：吸收全部剩余宽度 → 手动不再被挤 */
+  justify-content: flex-start;
   color: #fff;
-  border-color: var(--line-strong);
+  border-color: var(--seg-accent, var(--line-strong));
   background: var(--plasma-soft);
-  box-shadow: var(--glow-violet), inset 0 0 18px rgba(124, 92, 255, 0.15);
-  transform: translateY(-1px);
+  box-shadow: var(--seg-glow, var(--glow-violet)), inset 0 0 18px rgba(124, 92, 255, 0.15);
 }
 
 .oc-mode-glyph {
-  font-size: 18px;
+  font-size: 22px;
   line-height: 1;
+  color: var(--seg-accent, var(--cyan));
+  transition: filter 0.3s var(--ease);
 }
 
 .oc-mode.active .oc-mode-glyph {
-  filter: drop-shadow(0 0 8px currentColor);
+  filter: drop-shadow(0 0 10px var(--seg-accent, var(--cyan)));
 }
 
 .oc-mode-name {
-  font-size: 13px;
+  margin-left: 6px;
+  font-size: 14px;
   font-weight: 600;
+}
+
+/* 详情（EN + meters）默认折叠为 0 宽，仅 active 展开 —— 杜绝窄列换行 / 裁切 */
+.oc-mode-detail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  margin-left: 0;
+  max-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-width 0.42s var(--ease), opacity 0.3s var(--ease), margin-left 0.42s var(--ease);
+}
+
+.oc-mode.active .oc-mode-detail {
+  margin-left: 8px;
+  max-width: 180px;
+  opacity: 1;
 }
 
 .oc-mode-en {
   font-family: var(--mono);
   font-size: 10px;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  opacity: 0.7;
-}
-
-.oc-mode-tip {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  font-size: 12px;
-  color: var(--muted);
+  color: var(--seg-accent, var(--cyan));
 }
 
 .oc-mode-meters {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 10px;
   color: var(--mint);
   white-space: nowrap;
+}
+
+/* —— 自由度 → 成本 进阶刻度尺：3 个等距停靠点，thumb 精确锁定档位 —— */
+.oc-mode-rail {
+  position: relative;
+  height: 20px;
+  margin-top: 2px;
+}
+
+.oc-mode-rail::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: 4px;
+  right: 4px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--plasma);
+  opacity: 0.55;
+}
+
+.oc-mode-rail-thumb {
+  position: absolute;
+  top: 5px;
+  left: 12%;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--seg-accent, var(--cyan));
+  box-shadow: var(--seg-glow, var(--glow-cyan));
+  transform: translateX(-50%);
+  transition: left 0.42s var(--ease), background 0.42s var(--ease), box-shadow 0.42s var(--ease);
+}
+
+.oc-mode-rail[data-mode="auto"] .oc-mode-rail-thumb { left: 12%; }
+.oc-mode-rail[data-mode="semi"] .oc-mode-rail-thumb { left: 50%; }
+.oc-mode-rail[data-mode="manual"] .oc-mode-rail-thumb { left: 88%; }
+
+/* ticks 在 thumb 之前渲染，故 nth-of-type(1/2/3) 恰为 低/中/高 */
+.oc-mode-rail-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--muted-2);
+}
+.oc-mode-rail-tick:nth-of-type(1) { left: 12%; }
+.oc-mode-rail-tick:nth-of-type(2) { left: 50%; }
+.oc-mode-rail-tick:nth-of-type(3) { left: 88%; }
+
+/* tip：meters 已移入 active 段，这里收敛为单行说明 */
+.oc-mode-tip {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
 }
 
 /* —— 创意输入 —— */
@@ -4367,8 +4481,12 @@ body::after {
 }
 
 @media (max-width: 900px) {
+  /* compose 列堆叠为全宽，行更宽 → active 段可容纳更长详情 */
   .oc-modes {
-    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+  .oc-mode.active .oc-mode-detail {
+    max-width: 260px;
   }
   .oc-canvas {
     max-height: 220px;
@@ -4381,5 +4499,12 @@ body::after {
   .oc-link.lit,
   .oc-edge {
     animation: none;
+  }
+  /* 模式选择器：保留全部信息，仅去过渡 / 位移 */
+  .oc-mode,
+  .oc-mode-glyph,
+  .oc-mode-detail,
+  .oc-mode-rail-thumb {
+    transition: none;
   }
 }

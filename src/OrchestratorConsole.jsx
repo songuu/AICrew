@@ -26,10 +26,12 @@ import { parseDirectorCommand } from "./flow/director.js";
 const AGENT_BY_ID = new Map(agents.map(agent => [agent.id, agent]));
 
 // 三档「驾驶模式」：自由度 / 成本随档位升高。文案直接进 UI。
+// accent/glow 给每档专属色身份（auto=青 / semi=靛 / manual=薄荷），
+// 通过 inline CSS 变量 --seg-accent / --seg-glow 注入，作为 glyph、active 高亮、rail thumb 的单一色源。
 const MODES = [
-  { id: "auto", glyph: "⚡", name: "自动", en: "Autopilot", freedom: "低", cost: "经济", tip: "只给创意，中枢自己组装并跑完" },
-  { id: "semi", glyph: "⚙", name: "半自动", en: "Co-Pilot", freedom: "中", cost: "标准", tip: "中枢建议，你勾选增减 + 拖拽微调" },
-  { id: "manual", glyph: "✦", name: "手动", en: "Director", freedom: "高", cost: "尊享", tip: "对话逐节点绘制流程，自由度最高" }
+  { id: "auto", glyph: "⚡", name: "自动", en: "Autopilot", freedom: "低", cost: "经济", tip: "只给创意，中枢自己组装并跑完", accent: "var(--cyan)", glow: "var(--glow-cyan)" },
+  { id: "semi", glyph: "⚙", name: "半自动", en: "Co-Pilot", freedom: "中", cost: "标准", tip: "中枢建议，你勾选增减 + 拖拽微调", accent: "var(--indigo)", glow: "var(--glow-violet)" },
+  { id: "manual", glyph: "✦", name: "手动", en: "Director", freedom: "高", cost: "尊享", tip: "对话逐节点绘制流程，自由度最高", accent: "var(--mint)", glow: "var(--glow-mint)" }
 ];
 
 const PLACEHOLDER = "用一句话描述你的创意，例如：给露营灯做一组小红书种草笔记";
@@ -205,34 +207,60 @@ export function OrchestratorConsole({ onRun, generating, aiReady, task }) {
 
   return (
     <section className="panel oc-panel">
-      <div className="oc-head">
-        <div>
-          <p className="eyebrow">Orchestrator</p>
-          <h3>中枢编排台</h3>
+      {/* —— Hero 模式选择器：核心控件「一个 Flow，三种创作方式」 —— */}
+      <div className="oc-mode-block">
+        <div className="oc-head">
+          <div>
+            <p className="eyebrow">Orchestrator</p>
+            <h3>中枢编排台</h3>
+          </div>
+          <span className="oc-credit-chip" title="按所选 Agent 估算">≈ {credits} credits</span>
         </div>
-        <span className="oc-credit-chip" title="按所选 Agent 估算">≈ {credits} credits</span>
-      </div>
 
-      {/* 档位切换 */}
-      <div className="oc-modes" role="tablist" aria-label="编排模式">
-        {MODES.map(item => (
-          <button
-            key={item.id}
-            type="button"
-            role="tab"
-            aria-selected={mode === item.id}
-            className={`oc-mode ${mode === item.id ? "active" : ""}`}
-            onClick={() => switchMode(item.id)}
-          >
-            <span className="oc-mode-glyph">{item.glyph}</span>
-            <span className="oc-mode-name">{item.name}</span>
-            <span className="oc-mode-en">{item.en}</span>
-          </button>
-        ))}
-      </div>
-      <div className="oc-mode-tip">
-        <span>{activeMode.tip}</span>
-        <span className="oc-mode-meters">自由度 {activeMode.freedom} · {activeMode.cost}</span>
+        <p className="oc-mode-eyebrow">MODE · 一个 Flow，三种创作方式</p>
+
+        {/* 档位切换：active 段自展开吸收余宽、idle 段贴内容收缩 → 手动不再被挤；
+            active 段本身即选中指示器（高亮锚定真实 DOM 盒，永不漂移）。*/}
+        <div className="oc-modes" role="tablist" aria-label="编排模式" data-mode={mode}>
+          {MODES.map(item => {
+            const isActive = mode === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                className={`oc-mode ${isActive ? "active" : ""}`}
+                style={{ "--seg-accent": item.accent, "--seg-glow": item.glow }}
+                onClick={() => switchMode(item.id)}
+              >
+                <span className="oc-mode-glyph" aria-hidden>{item.glyph}</span>
+                <span className="oc-mode-name">{item.name}</span>
+                {/* 仅 active 段展开：英文代号 + 自由度/成本；idle 折叠为 0 宽，杜绝窄列换行/裁切 */}
+                <span className="oc-mode-detail">
+                  <span className="oc-mode-en">{item.en}</span>
+                  <span className="oc-mode-meters">自由度 {item.freedom} · {item.cost}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* 自由度 → 成本 进阶刻度尺：ticks 在前、thumb 在后（保证 nth-of-type 正确映射），
+            thumb 锁定当前档位（accent 由当前 active 段注入）。*/}
+        <div
+          className="oc-mode-rail"
+          data-mode={mode}
+          style={{ "--seg-accent": activeMode.accent, "--seg-glow": activeMode.glow }}
+          aria-hidden
+        >
+          <span className="oc-mode-rail-tick">低</span>
+          <span className="oc-mode-rail-tick">中</span>
+          <span className="oc-mode-rail-tick">高</span>
+          <span className="oc-mode-rail-thumb" />
+        </div>
+
+        <p className="oc-mode-tip">{activeMode.tip}</p>
       </div>
 
       {/* 创意输入：三模式共用（手动模式作为流程的创意基底，具体编排靠对话）*/}
