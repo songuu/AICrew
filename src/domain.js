@@ -111,7 +111,7 @@ export const agents = [
     accent: "#93c5fd",
     responsibility: "按平台输出视频/封面/文案/分镜或图文包。",
     input: "通过 QA 的变体、平台规格、项目元数据",
-    output: "TikTok/Reels/Shorts/小红书 内容包",
+    output: "抖音/小红书 内容包",
     tools: ["format_packager", "platform_preset_mapper", "export_manifest_builder"],
     evaluation: "文件清单完整、画幅/格式正确、导出可追溯",
     cost: 8
@@ -133,14 +133,14 @@ export const orchestratorAgent = {
 export const skills = [
   {
     id: "ecom_tiktok_product_ad_v1",
-    name: "TikTok Product Ad",
+    name: "抖音 商品广告",
     category: "电商广告",
     stage: "MVP",
     estimatedCredits: 120,
     formats: ["9:16 MP4", "封面 PNG", "文案 MD"],
     agents: ["brief", "strategy", "script", "storyboard", "visual", "video", "copy", "qa", "export"],
-    promise: "一张商品图生成 3 条 TikTok 广告视频内容包",
-    bestFor: "Shopify、TikTok Shop、Amazon 卖家",
+    promise: "一张商品图生成 3 条抖音广告视频内容包",
+    bestFor: "抖音电商、品牌商家、跨境卖家",
     palette: ["#8bd3ff", "#ff7a90", "#f9c74f"]
   },
   {
@@ -199,14 +199,18 @@ export const skills = [
 // 平台行为一律从这里取数，避免在业务逻辑里散落 `=== "TikTok"` 这类硬编码分支。
 export const platformPresets = [
   {
+    // 抖音：短视频主阵地，9:16 强 Hook、快节奏。沿用原 TikTok 预设，id 保持 "tiktok"
+    // 以兼容历史数据与现有 skill / 检测逻辑，仅对外展示名改为「抖音」。
     id: "tiktok",
-    name: "TikTok",
+    name: "抖音",
     ratio: "9:16",
     hookSeconds: 3,
     tone: "快节奏、强 Hook、直接 CTA",
     creditMultiplier: 1,
     platformFit: 92
   },
+  // 目前仅保留「小红书 + 抖音」两个平台，其余暂时注释（保留结构以便日后恢复）。
+  /*
   {
     id: "reels",
     name: "Instagram Reels",
@@ -234,6 +238,7 @@ export const platformPresets = [
     creditMultiplier: 0.92,
     platformFit: 86
   },
+  */
   {
     // 小红书：图文种草为主，3:4 竖图封面驱动，调性真诚轻软广。
     id: "rednote",
@@ -246,7 +251,7 @@ export const platformPresets = [
   }
 ];
 
-// 按 name / id 解析平台预设，找不到回退到第一个（TikTok），供全链路统一取数。
+// 按 name / id 解析平台预设，找不到回退到第一个（抖音），供全链路统一取数。
 export function findPlatformPreset(platform = "") {
   const value = String(platform).toLowerCase();
   return (
@@ -279,7 +284,7 @@ export function createInitialState() {
       productName: "NovaGlow Lamp",
       sellingPoints: "便携、柔光、露营和桌搭都适合",
       targetAudience: "25-38 岁生活方式消费者",
-      platform: "TikTok",
+      platform: "抖音",
       goal: "推广新品并提升首周转化",
       style: "高级、明亮、快节奏"
     }),
@@ -310,7 +315,7 @@ export function createInitialState() {
     projects: [
       {
         id: makeId("project"),
-        name: "NovaGlow TikTok launch",
+        name: "NovaGlow 抖音 launch",
         type: "ecommerce_video",
         status: "completed",
         skillId: "ecom_tiktok_product_ad_v1",
@@ -325,7 +330,7 @@ export function createInitialState() {
     exports: completedTask.exports.map(item => ({
       ...item,
       id: makeId("export"),
-      projectName: "NovaGlow TikTok launch",
+      projectName: "NovaGlow 抖音 launch",
       createdAt: now()
     })),
     creditLedger: [
@@ -375,7 +380,7 @@ export function createAsset(type, name, source = "upload", tags = []) {
 }
 
 export function normalizeBrief(input = {}) {
-  const preset = findPlatformPreset(input.platform || "TikTok");
+  const preset = findPlatformPreset(input.platform || "抖音");
   return {
     productName: input.productName?.trim() || "Untitled Product",
     sellingPoints: input.sellingPoints?.trim() || "省时、高质、可规模化生产内容",
@@ -389,16 +394,14 @@ export function normalizeBrief(input = {}) {
   };
 }
 
-// 从自由文本中识别目标平台。用专属 token 匹配，避免 "red"/"ins" 等子串误命中。
+// 从自由文本中识别目标平台。平台已收敛为「小红书 + 抖音」：
+// 命中小红书专属 token 走小红书，其余（含抖音/douyin/tiktok 等）一律回退抖音。
 function detectPlatform(text = "") {
   const lower = text.toLowerCase();
   if (text.includes("小红书") || lower.includes("xiaohongshu") || lower.includes("rednote") || lower.includes("xhs")) {
     return "小红书";
   }
-  if (lower.includes("reels") || lower.includes("instagram")) return "Instagram Reels";
-  if (lower.includes("shorts") || lower.includes("youtube")) return "YouTube Shorts";
-  if (lower.includes("shopify") || text.includes("详情页")) return "Shopify PDP";
-  return "TikTok";
+  return "抖音";
 }
 
 export function parseBriefText(text = "") {
@@ -423,7 +426,12 @@ export function isVideoSkill(skill) {
 }
 
 export function estimateCredits(brief, skillId) {
-  const skill = findSkill(skillId);
+  return estimateCreditsForSkill(brief, findSkill(skillId));
+}
+
+// 估算信用：接受任意 skill 形状对象。预设 skill 与 Flow 编排图动态合成的临时 skill
+// 共用同一套成本模型，保证三种编排模式的报价口径一致。
+export function estimateCreditsForSkill(brief, skill) {
   const platformMultiplier = findPlatformPreset(brief.platform).creditMultiplier;
   const complexity = Math.min(1.35, 1 + brief.sellingPoints.length / 260);
   const estimated = Math.round(skill.estimatedCredits * platformMultiplier * complexity);
@@ -440,9 +448,15 @@ export function estimateCredits(brief, skillId) {
 }
 
 export function runCreativeWorkflow({ brief, skillId, brandKit = defaultBrandKit }) {
+  return runCreativeWorkflowWithSkill({ brief, skill: findSkill(skillId), brandKit });
+}
+
+// 用显式 skill 对象执行编排管线。预设 skill 与 Flow 编排图合成的临时 skill 走同一入口，
+// 因此自动 / 半自动 / 手动三种模式产出的 task 结构、评分、事件、导出契约完全一致——
+// 这是「三模式只是同一个 Flow 的不同创作方式」在执行层的落点。
+export function runCreativeWorkflowWithSkill({ brief, skill, brandKit = defaultBrandKit }) {
   const normalizedBrief = normalizeBrief(brief);
-  const skill = findSkill(skillId);
-  const credits = estimateCredits(normalizedBrief, skill.id);
+  const credits = estimateCreditsForSkill(normalizedBrief, skill);
   const workflowAgents = skill.agents.map((agentId, index) => {
     const agent = agents.find(item => item.id === agentId);
     return buildAgentStep(agent, normalizedBrief, skill, brandKit, index);
@@ -525,7 +539,7 @@ export function saveSkillFromProject(project, visibility = "private") {
   };
 }
 
-export function buildExportRecord(project, variant, platform = "TikTok") {
+export function buildExportRecord(project, variant, platform = "抖音") {
   return {
     id: makeId("export"),
     projectName: project.name,

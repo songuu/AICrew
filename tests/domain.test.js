@@ -20,16 +20,16 @@ test("normalizes incomplete brief with PRD defaults", () => {
   const brief = normalizeBrief({ productName: "Pocket Camera" });
 
   assert.equal(brief.productName, "Pocket Camera");
-  assert.equal(brief.platform, "TikTok");
+  assert.equal(brief.platform, "抖音");
   assert.match(brief.goal, /生成/);
 });
 
 test("parses freeform brief into structured creative brief", () => {
-  const brief = parseBriefText("产品 Smart Bottle，受众 健身人群，目标 提升首单转化，TikTok 高级风格");
+  const brief = parseBriefText("产品 Smart Bottle，受众 健身人群，目标 提升首单转化，抖音 高级风格");
 
   assert.equal(brief.productName, "Smart Bottle");
   assert.equal(brief.targetAudience, "健身人群");
-  assert.equal(brief.platform, "TikTok");
+  assert.equal(brief.platform, "抖音");
   assert.match(brief.style, /高级/);
 });
 
@@ -152,16 +152,6 @@ test("video skills still deliver a video pack", () => {
   assert.ok(task.exports[0].files.includes("video.mp4"));
   assert.equal(task.variants[0].duration, 15);
   assert.ok(task.credits.video > 0);
-});
-
-test("Shopify PDP variants use the 1:1 preset ratio", () => {
-  const task = runCreativeWorkflow({
-    brief: normalizeBrief({ productName: "Desk Pad", platform: "Shopify PDP" }),
-    skillId: "ecom_tiktok_product_ad_v1",
-    brandKit: defaultBrandKit
-  });
-
-  assert.equal(task.variants[0].aspectRatio, "1:1");
 });
 
 test("detects 小红书 platform from freeform brief", () => {

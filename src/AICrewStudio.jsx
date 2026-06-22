@@ -11,7 +11,6 @@ import {
   modelRoutes,
   normalizeBrief,
   parseBriefText,
-  platformPresets,
   reviseVariantHook,
   retryAgentStep,
   runCreativeWorkflow,
@@ -28,7 +27,9 @@ import {
   saveAiSelection
 } from "./ai/config.js";
 import { runCreativeWorkflowWithAI } from "./ai/workflow.js";
+import { runFlow, runFlowWithAI } from "./flow/execute.js";
 import { CanvasStudio } from "./canvas/CanvasStudio.jsx";
+import { OrchestratorConsole } from "./OrchestratorConsole.jsx";
 
 const storageKey = "aicrew-studio-next-state-v1";
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/aicrew";
@@ -240,6 +241,24 @@ export function AICrewStudio({ initialView = "dashboard" }) {
     }
   }
 
+  // Flow 编排执行：三模式控制台统一入口。与 runAndCommit 同样的 AI/模拟兜底与提交逻辑，
+  // 区别仅在用 Flow 编排图（runFlow）而非预设 skillId 驱动管线。
+  async function runFlowAndCommit(brief, flow, meta) {
+    setGenerating(true);
+    try {
+      const nextTask = isAiConfigured(aiConfig)
+        ? await runFlowWithAI({ brief, flow, brandKit: state.brandKit, aiConfig, meta })
+        : runFlow({ brief, flow, brandKit: state.brandKit, meta });
+      commitGeneratedTask(
+        nextTask,
+        `${brief.productName} ${brief.platform} 编排`,
+        `${brief.productName} 编排生成（${meta?.category || "Flow"}）`
+      );
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   function generateFromBrief(event) {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget).entries());
@@ -400,7 +419,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
 
   function exportVariant() {
     if (!project || !activeVariant) return;
-    const record = buildExportRecord(project, activeVariant, task?.brief.platform || "TikTok");
+    const record = buildExportRecord(project, activeVariant, task?.brief.platform || "抖音");
     setState(current => ({
       ...current,
       exports: [record, ...current.exports]
@@ -465,6 +484,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               selectedVariantId={selectedVariantId}
               setSelectedVariantId={setSelectedVariantId}
               generateFromBrief={generateFromBrief}
+              onRunFlow={runFlowAndCommit}
               reviseHook={reviseHook}
               addAsset={addAsset}
               saveCurrentSkill={saveCurrentSkill}
@@ -659,7 +679,7 @@ function Dashboard({ state, task, project, generateQuick, navigate, generating, 
             <textarea
               name="briefText"
               rows="4"
-              defaultValue="产品 NovaGlow Lamp，受众 25-38 岁生活方式消费者，目标 推广新品并提升首周转化，TikTok 高级快节奏"
+              defaultValue="产品 NovaGlow Lamp，受众 25-38 岁生活方式消费者，目标 推广新品并提升首周转化，抖音 高级快节奏"
             />
             <button className="primary-button" type="submit" disabled={generating}>
               {generating ? "AI 生成中…" : "Run Agent Team"}
@@ -726,6 +746,7 @@ function Workbench({
   selectedVariantId,
   setSelectedVariantId,
   generateFromBrief,
+  onRunFlow,
   reviseHook,
   addAsset,
   saveCurrentSkill,
@@ -736,73 +757,12 @@ function Workbench({
 }) {
   return (
     <div className="workbench-layout">
-      <section className="panel composer-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">Brief</p>
-            <h3>生成电商广告内容包</h3>
-          </div>
-          <span className="status-chip">MVP Flow</span>
-        </div>
-        <form className="brief-form" onSubmit={generateFromBrief}>
-          <label>
-            商品名称
-            <input name="productName" defaultValue={task?.brief.productName || "NovaGlow Lamp"} />
-          </label>
-          <label>
-            卖点
-            <textarea name="sellingPoints" rows="4" defaultValue={task?.brief.sellingPoints || "便携、柔光、露营和桌搭都适合"} />
-          </label>
-          <div className="form-grid">
-            <label>
-              目标受众
-              <input name="targetAudience" defaultValue={task?.brief.targetAudience || "25-38 岁生活方式消费者"} />
-            </label>
-            <label>
-              平台
-              <select name="platform" defaultValue={task?.brief.platform || "TikTok"}>
-                {platformPresets.map(preset => (
-                  <option key={preset.id} value={preset.name}>
-                    {preset.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div className="form-grid">
-            <label>
-              目标
-              <input name="goal" defaultValue={task?.brief.goal || "推广新品并提升首周转化"} />
-            </label>
-            <label>
-              风格
-              <input name="style" defaultValue={task?.brief.style || "高级、明亮、快节奏"} />
-            </label>
-          </div>
-          <label>
-            Skill
-            <select name="skillId" defaultValue={task?.skillId || "ecom_tiktok_product_ad_v1"}>
-              {allSkills.map(skill => (
-                <option key={skill.id} value={skill.id}>
-                  {skill.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button className="upload-well reset-button" type="button" onClick={addAsset}>
-            <strong>Product asset</strong>
-            <span>{state.assets.length} items in library</span>
-          </button>
-          <button className="primary-button full" type="submit" disabled={generating}>
-            {generating ? "AI 生成中…" : "Generate Content Pack"}
-          </button>
-          <p className="ai-mode-hint">
-            {isAiConfigured(aiConfig)
-              ? `${aiRuntimeText(aiConfig)}${hasAiMode(aiConfig, "image") ? ` · ${describeSelectedModel(aiConfig, aiConfig.selection, "image")}` : ""}`
-              : "未配置系统 AI · 运行模拟"}
-          </p>
-        </form>
-      </section>
+      <OrchestratorConsole
+        onRun={onRunFlow}
+        generating={generating}
+        aiReady={isAiConfigured(aiConfig)}
+        task={task}
+      />
       <section className="workspace-canvas">
         <div className="canvas-toolbar">
           <div>

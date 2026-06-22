@@ -3,7 +3,7 @@
 //  - 包装而非修改 runCreativeWorkflow —— 评分/结构/导出契约与 domain 测试不受影响。
 //  - 无系统 AI 配置 → 原样回退确定性模拟。
 //  - 任一 AI 调用失败 → 局部回退该 variant 的模拟文案，整体不抛错（aiMeta 记录降级）。
-import { runCreativeWorkflow, findPlatformPreset, defaultBrandKit } from "../domain.js";
+import { runCreativeWorkflow, runCreativeWorkflowWithSkill, findPlatformPreset, defaultBrandKit } from "../domain.js";
 import { hasAiMode, isAiConfigured, selectedModelFor } from "./config.js";
 import { generateText, generateImage } from "./providers.js";
 
@@ -83,8 +83,11 @@ function mergeAiCopy(variant, aiCopy) {
   };
 }
 
-export async function runCreativeWorkflowWithAI({ brief, skillId, brandKit = defaultBrandKit, aiConfig, signal, fetchImpl } = {}) {
-  const base = runCreativeWorkflow({ brief, skillId, brandKit });
+export async function runCreativeWorkflowWithAI({ brief, skillId, skill, brandKit = defaultBrandKit, aiConfig, signal, fetchImpl } = {}) {
+  // 传 skill 对象（Flow 编排图合成）走自定义编排；传 skillId 走预设 skill。两条路共用同一套 AI 增强。
+  const base = skill
+    ? runCreativeWorkflowWithSkill({ brief, skill, brandKit })
+    : runCreativeWorkflow({ brief, skillId, brandKit });
 
   if (!isAiConfigured(aiConfig)) {
     return { ...base, aiMeta: { used: false, reason: "no-system-config" } };

@@ -1,0 +1,358 @@
+"use client";
+
+// 三模式编排控制台：自动 / 半自动 / 手动，共用同一个 Flow 编排图。
+//
+// 设计核心——「一个 Flow，三种创作方式」：
+//   auto   中枢从创意推断整条链（routeIdeaToFlow），逐节点点亮后自动运行。
+//   semi   中枢先建议，用户勾选增减 + 拖拽微调顺序。
+//   manual 导演台：对话逐节点绘制流程，节点在画布上点亮 / 连线。
+// 三者最终都把一个合法 Flow 交给 onRun(brief, flow, meta) 执行，产出契约完全一致。
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { agents, parseBriefText, findPlatformPreset } from "./domain.js";
+import {
+  createFlow,
+  toggleAgent,
+  reorderNode,
+  orderedAgentIds,
+  validateFlow,
+  estimateFlowCredits,
+  isVideoFlow,
+  hasAgent
+} from "./flow/model.js";
+import { routeIdeaToFlow } from "./flow/router.js";
+import { parseDirectorCommand } from "./flow/director.js";
+
+const AGENT_BY_ID = new Map(agents.map(agent => [agent.id, agent]));
+
+// 三档「驾驶模式」：自由度 / 成本随档位升高。文案直接进 UI。
+const MODES = [
+  { id: "auto", glyph: "⚡", name: "自动", en: "Autopilot", freedom: "低", cost: "经济", tip: "只给创意，中枢自己组装并跑完" },
+  { id: "semi", glyph: "⚙", name: "半自动", en: "Co-Pilot", freedom: "中", cost: "标准", tip: "中枢建议，你勾选增减 + 拖拽微调" },
+  { id: "manual", glyph: "✦", name: "手动", en: "Director", freedom: "高", cost: "尊享", tip: "对话逐节点绘制流程，自由度最高" }
+];
+
+const PLACEHOLDER = "用一句话描述你的创意，例如：给露营灯做一组小红书种草笔记";
+
+// —— 横向能量链：自动 / 半自动模式下可视化当前编排 ——
+function NodeChain({ flow, revealCount = Infinity }) {
+  const ids = orderedAgentIds(flow);
+  if (!ids.length) return <div className="oc-chain oc-chain-empty">等待中枢编排…</div>;
+  return (
+    <div className="oc-chain" role="list">
+      {ids.map((id, index) => {
+        const agent = AGENT_BY_ID.get(id);
+        const revealed = index < revealCount;
+        return (
+          <div className="oc-chain-item" key={`${id}-${index}`}>
+            {index > 0 && <span className={`oc-link ${revealed ? "lit" : ""}`} aria-hidden />}
+            <div
+              className={`oc-node ${revealed ? "lit" : "dim"}`}
+              style={{ "--accent": agent?.accent || "#8bd3ff" }}
+              role="listitem"
+              title={agent?.responsibility}
+            >
+              <span className="oc-node-glyph">{index + 1}</span>
+              <span className="oc-node-title">{agent?.title}</span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// —— 手动模式迷你流程画布：节点按坐标排布，SVG 连线 ——
+function FlowCanvas({ flow }) {
+  const NODE_W = 124;
+  const NODE_H = 58;
+  const byId = new Map(flow.nodes.map(node => [node.id, node]));
+  const width = Math.max(360, ...flow.nodes.map(node => node.x + NODE_W + 60));
+  const height = Math.max(220, ...flow.nodes.map(node => node.y + NODE_H + 60));
+  return (
+    <div className="oc-canvas" style={{ width, height }}>
+      <svg className="oc-canvas-edges" width={width} height={height} aria-hidden>
+        <defs>
+          <marker id="oc-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+            <path d="M0,0 L8,3 L0,6 Z" fill="rgba(139,211,255,0.8)" />
+          </marker>
+        </defs>
+        {flow.edges.map(edge => {
+          const from = byId.get(edge.from);
+          const to = byId.get(edge.to);
+          if (!from || !to) return null;
+          const x1 = from.x + NODE_W;
+          const y1 = from.y + NODE_H / 2;
+          const x2 = to.x;
+          const y2 = to.y + NODE_H / 2;
+          const mid = (x1 + x2) / 2;
+          return (
+            <path
+              key={edge.id}
+              className="oc-edge"
+              d={`M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`}
+              markerEnd="url(#oc-arrow)"
+            />
+          );
+        })}
+      </svg>
+      {flow.nodes.map(node => {
+        const agent = AGENT_BY_ID.get(node.agentId);
+        return (
+          <div
+            key={node.id}
+            className="oc-canvas-node"
+            style={{ left: node.x, top: node.y, width: NODE_W, height: NODE_H, "--accent": agent?.accent || "#8bd3ff" }}
+            title={agent?.responsibility}
+          >
+            <span className="oc-canvas-node-title">{agent?.title}</span>
+            <span className="oc-canvas-node-id">{agent?.id}</span>
+          </div>
+        );
+      })}
+      {!flow.nodes.length && <div className="oc-canvas-empty">画布空白 · 对话添加第一个节点</div>}
+    </div>
+  );
+}
+
+export function OrchestratorConsole({ onRun, generating, aiReady, task }) {
+  const [mode, setMode] = useState("auto");
+  const [idea, setIdea] = useState("给露营灯做一组小红书种草笔记");
+  const [flow, setFlow] = useState(() => createFlow("auto"));
+  const [route, setRoute] = useState(null); // {rationale, matchedSkill, summary, brief}
+  const [revealCount, setRevealCount] = useState(0); // 自动模式逐节点点亮
+  const [phase, setPhase] = useState("idle"); // idle | thinking | ready
+  const [log, setLog] = useState([{ role: "system", text: "导演台就绪。试试「加视觉」「视觉连文案」「运行」。" }]);
+  const [dragIndex, setDragIndex] = useState(null);
+  const chatInputRef = useRef(null);
+
+  const platform = useMemo(() => findPlatformPreset(parseBriefText(idea).platform), [idea]);
+  const credits = useMemo(() => estimateFlowCredits(flow, platform.name), [flow, platform]);
+  const validity = useMemo(() => validateFlow(flow), [flow]);
+  const orderedIds = orderedAgentIds(flow);
+
+  // 切换模式重置编排上下文，避免线性链与 DAG 互相污染。
+  function switchMode(nextMode) {
+    setMode(nextMode);
+    setFlow(createFlow(nextMode));
+    setRoute(null);
+    setPhase("idle");
+    setRevealCount(0);
+  }
+
+  // 中枢路由：auto/semi 共用。auto 走点亮动画后自动运行；semi 停在可编辑态。
+  function runRouter(thenRun) {
+    const result = routeIdeaToFlow(idea, mode);
+    setRoute(result);
+    setFlow(result.flow);
+    if (thenRun) {
+      setPhase("thinking");
+      setRevealCount(0);
+    } else {
+      setPhase("ready");
+      setRevealCount(Infinity);
+    }
+  }
+
+  // 自动模式：逐节点点亮，亮完自动触发运行。
+  useEffect(() => {
+    if (phase !== "thinking" || !route) return;
+    const total = route.rationale.length;
+    if (revealCount >= total) {
+      const timer = setTimeout(() => {
+        setPhase("ready");
+        // 用路由时的同源 brief，保证执行的 flow 与 brief/平台/计费口径一致。
+        triggerRun(route.flow, route.brief);
+      }, 420);
+      return () => clearTimeout(timer);
+    }
+    const timer = setTimeout(() => setRevealCount(count => count + 1), 520);
+    return () => clearTimeout(timer);
+  }, [phase, revealCount, route]);
+
+  function triggerRun(targetFlow = flow, briefOverride) {
+    const check = validateFlow(targetFlow);
+    if (!check.valid) return;
+    const brief = briefOverride || parseBriefText(idea);
+    const meta = { name: route?.matchedSkill?.name || "自定义编排", category: MODES.find(m => m.id === mode)?.name };
+    onRun(brief, targetFlow, meta);
+  }
+
+  // —— 半自动：勾选 + 拖拽 ——
+  function onToggle(agentId) {
+    setFlow(current => toggleAgent(current, agentId).flow);
+  }
+  function onDrop(targetIndex) {
+    if (dragIndex === null || dragIndex === targetIndex) return;
+    setFlow(current => reorderNode(current, dragIndex, targetIndex));
+    setDragIndex(null);
+  }
+
+  // —— 导演台：对话 ——
+  function sendCommand(event) {
+    event.preventDefault();
+    const text = chatInputRef.current?.value || "";
+    if (!text.trim()) return;
+    const result = parseDirectorCommand(text, flow);
+    setFlow(result.flow);
+    setLog(current => [...current, { role: "user", text }, { role: "assistant", text: result.reply }]);
+    chatInputRef.current.value = "";
+    if (result.run) triggerRun(result.flow);
+  }
+
+  const activeMode = MODES.find(m => m.id === mode);
+  const busy = generating || phase === "thinking";
+
+  return (
+    <section className="panel oc-panel">
+      <div className="oc-head">
+        <div>
+          <p className="eyebrow">Orchestrator</p>
+          <h3>中枢编排台</h3>
+        </div>
+        <span className="oc-credit-chip" title="按所选 Agent 估算">≈ {credits} credits</span>
+      </div>
+
+      {/* 档位切换 */}
+      <div className="oc-modes" role="tablist" aria-label="编排模式">
+        {MODES.map(item => (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={mode === item.id}
+            className={`oc-mode ${mode === item.id ? "active" : ""}`}
+            onClick={() => switchMode(item.id)}
+          >
+            <span className="oc-mode-glyph">{item.glyph}</span>
+            <span className="oc-mode-name">{item.name}</span>
+            <span className="oc-mode-en">{item.en}</span>
+          </button>
+        ))}
+      </div>
+      <div className="oc-mode-tip">
+        <span>{activeMode.tip}</span>
+        <span className="oc-mode-meters">自由度 {activeMode.freedom} · {activeMode.cost}</span>
+      </div>
+
+      {/* 创意输入：三模式共用（手动模式作为流程的创意基底，具体编排靠对话）*/}
+      <textarea
+        className="oc-idea"
+        rows={mode === "manual" ? 2 : 3}
+        value={idea}
+        placeholder={PLACEHOLDER}
+        disabled={busy}
+        onChange={event => setIdea(event.target.value)}
+      />
+      {mode === "manual" && <p className="oc-hint">创意作为基底，下面用对话绘制流程节点 ↓</p>}
+
+      {/* —— 自动 —— */}
+      {mode === "auto" && (
+        <div className="oc-body">
+          <button type="button" className="oc-primary" disabled={busy} onClick={() => runRouter(true)}>
+            {phase === "thinking" ? "中枢编排中…" : generating ? "执行中…" : "⚡ 启动中枢自动驾驶"}
+          </button>
+          {route && (
+            <>
+              <p className="oc-summary">{route.summary}</p>
+              <NodeChain flow={flow} revealCount={revealCount} />
+              <ul className="oc-rationale">
+                {route.rationale.map((item, index) => (
+                  <li key={item.agentId} className={index < revealCount ? "lit" : "dim"}>
+                    <strong>{item.title}</strong>
+                    <span>{item.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* —— 半自动 —— */}
+      {mode === "semi" && (
+        <div className="oc-body">
+          <button type="button" className="oc-ghost" disabled={busy} onClick={() => runRouter(false)}>
+            ⚙ 让中枢先建议一条流程
+          </button>
+          {route && <p className="oc-summary">{route.summary}</p>}
+
+          <p className="oc-label">勾选 Agent（点亮 = 入选）</p>
+          <div className="oc-palette">
+            {agents.map(agent => {
+              const on = hasAgent(flow, agent.id);
+              return (
+                <button
+                  key={agent.id}
+                  type="button"
+                  className={`oc-chip ${on ? "on" : ""}`}
+                  style={{ "--accent": agent.accent }}
+                  onClick={() => onToggle(agent.id)}
+                  title={agent.responsibility}
+                >
+                  <span className="oc-chip-dot" />
+                  {agent.title}
+                  <em>{agent.cost}</em>
+                </button>
+              );
+            })}
+          </div>
+
+          <p className="oc-label">拖拽微调执行顺序</p>
+          {/* 直接遍历 flow.nodes：拖拽下标即 reorderNode 操作的节点数组下标，
+              二者同源，避免与拓扑序错位导致移错节点（半自动为线性流，顺序一致）。*/}
+          <div className="oc-order">
+            {flow.nodes.length === 0 && <span className="oc-hint">勾选 Agent 后在此排序</span>}
+            {flow.nodes.map((node, index) => {
+              const agent = AGENT_BY_ID.get(node.agentId);
+              return (
+                <div
+                  key={node.id}
+                  className="oc-pill"
+                  style={{ "--accent": agent?.accent }}
+                  draggable
+                  onDragStart={() => setDragIndex(index)}
+                  onDragOver={event => event.preventDefault()}
+                  onDrop={() => onDrop(index)}
+                >
+                  <span className="oc-pill-grip">⋮⋮</span>
+                  {agent?.title}
+                </div>
+              );
+            })}
+          </div>
+
+          <button type="button" className="oc-primary" disabled={busy || !validity.valid} onClick={() => triggerRun()}>
+            {generating ? "执行中…" : `▶ 运行 Co-Pilot · ${orderedIds.length} 个 Agent`}
+          </button>
+        </div>
+      )}
+
+      {/* —— 手动 / 导演台 —— */}
+      {mode === "manual" && (
+        <div className="oc-body oc-director">
+          <FlowCanvas flow={flow} />
+          {isVideoFlow(flow) ? null : <p className="oc-future">🎬 视频节点 · 未来支持</p>}
+          <div className="oc-chat-log">
+            {log.map((entry, index) => (
+              <div key={index} className={`oc-msg oc-msg-${entry.role}`}>
+                {entry.text}
+              </div>
+            ))}
+          </div>
+          <form className="oc-chat-form" onSubmit={sendCommand}>
+            <input ref={chatInputRef} className="oc-chat-input" placeholder="加视觉 / 视觉连文案 / 删质检 / 运行" />
+            <button type="submit" className="oc-send">↑</button>
+          </form>
+          <button type="button" className="oc-primary" disabled={busy || !validity.valid} onClick={() => triggerRun()}>
+            {generating ? "执行中…" : `✦ 运行 Director · ${orderedIds.length} 个节点`}
+          </button>
+        </div>
+      )}
+
+      <p className="oc-ai-hint">
+        {aiReady ? "系统 AI 已接入 · 真实生成" : "未配置系统 AI · 运行确定性模拟"}
+      </p>
+    </section>
+  );
+}

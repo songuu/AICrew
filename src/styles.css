@@ -3728,3 +3728,658 @@ body::after {
     min-height: 430px;
   }
 }
+
+/* =====================================================================
+   Orchestrator Console — 三模式编排台（科幻）
+   一个 Flow，三种创作方式：自动 / 半自动 / 手动。
+   复用主题令牌（--plasma / 霓虹 accent / glow），叠加节点点亮、
+   能量连线流动、中枢思考逐条揭示等动效。
+   ===================================================================== */
+
+.oc-panel {
+  grid-area: compose;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  position: relative;
+  overflow: hidden;
+}
+
+.oc-panel::after {
+  /* 中枢核心余晖：左上角的能量光晕 */
+  content: "";
+  position: absolute;
+  top: -60px;
+  right: -40px;
+  width: 200px;
+  height: 200px;
+  background: radial-gradient(circle, rgba(124, 92, 255, 0.22), transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.oc-panel > * {
+  position: relative;
+  z-index: 1;
+}
+
+.oc-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.oc-credit-chip {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--glass);
+  color: var(--cyan);
+  box-shadow: inset 0 0 12px rgba(92, 225, 255, 0.12);
+  white-space: nowrap;
+}
+
+/* —— 档位切换 —— */
+.oc-modes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 6px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.oc-mode {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.3s var(--ease);
+}
+
+.oc-mode:hover {
+  color: var(--text);
+  background: var(--glass);
+}
+
+.oc-mode.active {
+  color: #fff;
+  border-color: var(--line-strong);
+  background: var(--plasma-soft);
+  box-shadow: var(--glow-violet), inset 0 0 18px rgba(124, 92, 255, 0.15);
+  transform: translateY(-1px);
+}
+
+.oc-mode-glyph {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.oc-mode.active .oc-mode-glyph {
+  filter: drop-shadow(0 0 8px currentColor);
+}
+
+.oc-mode-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.oc-mode-en {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.oc-mode-tip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.oc-mode-meters {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--mint);
+  white-space: nowrap;
+}
+
+/* —— 创意输入 —— */
+.oc-idea {
+  width: 100%;
+  resize: vertical;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  color: var(--text);
+  font: inherit;
+  line-height: 1.5;
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+
+.oc-idea:focus {
+  outline: none;
+  border-color: var(--cyan);
+  box-shadow: var(--glow-cyan);
+}
+
+.oc-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.oc-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 2px 0 -4px;
+}
+
+.oc-hint {
+  font-size: 12px;
+  color: var(--muted-2);
+}
+
+.oc-summary {
+  font-size: 12.5px;
+  color: var(--text);
+  padding: 8px 12px;
+  border-left: 2px solid var(--cyan);
+  background: var(--glass);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+/* —— 主 / 次按钮 —— */
+.oc-primary,
+.oc-ghost {
+  width: 100%;
+  padding: 13px 16px;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.25s var(--ease);
+  position: relative;
+  overflow: hidden;
+}
+
+.oc-primary {
+  border: none;
+  color: #05060b;
+  background: var(--plasma);
+  box-shadow: var(--glow-violet);
+}
+
+.oc-primary::before {
+  /* 掠光 */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 30%, rgba(255, 255, 255, 0.35), transparent 70%);
+  transform: translateX(-120%);
+  transition: transform 0.6s var(--ease);
+}
+
+.oc-primary:hover:not(:disabled)::before {
+  transform: translateX(120%);
+}
+
+.oc-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: var(--glow-cyan), var(--glow-violet);
+}
+
+.oc-ghost {
+  border: 1px solid var(--line-strong);
+  background: var(--glass);
+  color: var(--text);
+}
+
+.oc-ghost:hover:not(:disabled) {
+  border-color: var(--cyan);
+  box-shadow: var(--glow-cyan);
+}
+
+.oc-primary:disabled,
+.oc-ghost:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* —— 横向能量链（自动/半自动可视化）—— */
+.oc-chain {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  min-height: 64px;
+}
+
+.oc-chain-empty {
+  justify-content: center;
+  color: var(--muted-2);
+  font-size: 12px;
+}
+
+.oc-chain-item {
+  display: flex;
+  align-items: center;
+}
+
+.oc-link {
+  width: 16px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--line);
+  position: relative;
+}
+
+.oc-link.lit {
+  background: linear-gradient(90deg, var(--cyan), var(--violet));
+  background-size: 200% 100%;
+  animation: oc-flow 1.4s linear infinite;
+}
+
+.oc-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--accent, var(--cyan));
+  background: var(--glass);
+  transition: all 0.4s var(--ease);
+}
+
+.oc-node.dim {
+  opacity: 0.32;
+  filter: grayscale(0.6);
+  border-color: var(--line);
+}
+
+.oc-node.lit {
+  box-shadow: 0 0 16px -2px var(--accent, var(--cyan)), inset 0 0 10px -4px var(--accent, var(--cyan));
+  animation: oc-pulse 2.4s var(--ease) infinite;
+}
+
+.oc-node-glyph {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: #05060b;
+  background: var(--accent, var(--cyan));
+}
+
+.oc-node-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+/* —— 中枢理由（逐条揭示）—— */
+.oc-rationale {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.oc-rationale li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 10px 7px 22px;
+  border-radius: var(--radius-sm);
+  background: var(--glass);
+  position: relative;
+  transition: opacity 0.4s var(--ease), transform 0.4s var(--ease);
+}
+
+.oc-rationale li::before {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 13px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--mint);
+  box-shadow: var(--glow-mint);
+}
+
+.oc-rationale li.dim {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.oc-rationale li.lit {
+  opacity: 1;
+  transform: translateY(0);
+  animation: oc-reveal 0.5s var(--ease);
+}
+
+.oc-rationale strong {
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.oc-rationale span {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* —— 半自动：勾选芯片 —— */
+.oc-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.oc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.22s var(--ease);
+}
+
+.oc-chip:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+.oc-chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line-strong);
+  transition: all 0.22s var(--ease);
+}
+
+.oc-chip.on {
+  color: var(--text);
+  border-color: var(--accent, var(--cyan));
+  background: color-mix(in srgb, var(--accent, var(--cyan)) 12%, transparent);
+  box-shadow: 0 0 14px -4px var(--accent, var(--cyan));
+}
+
+.oc-chip.on .oc-chip-dot {
+  background: var(--accent, var(--cyan));
+  box-shadow: 0 0 8px var(--accent, var(--cyan));
+}
+
+.oc-chip em {
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+/* —— 半自动：拖拽排序 —— */
+.oc-order {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-height: 42px;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--line-strong);
+  background: var(--surface-3);
+}
+
+.oc-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent, var(--cyan));
+  background: var(--glass-strong);
+  color: var(--text);
+  font-size: 12px;
+  cursor: grab;
+  transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+
+.oc-pill:active {
+  cursor: grabbing;
+  transform: scale(1.04);
+  box-shadow: 0 0 16px -4px var(--accent, var(--cyan));
+}
+
+.oc-pill-grip {
+  font-family: var(--mono);
+  color: var(--muted-2);
+  letter-spacing: -2px;
+}
+
+/* —— 手动：导演台画布 —— */
+.oc-director {
+  gap: 10px;
+}
+
+.oc-canvas {
+  position: relative;
+  max-height: 280px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background:
+    radial-gradient(circle at 50% 0, rgba(124, 92, 255, 0.08), transparent 60%),
+    linear-gradient(var(--line-soft) 1px, transparent 1px) 0 0 / 100% 28px,
+    linear-gradient(90deg, var(--line-soft) 1px, transparent 1px) 0 0 / 28px 100%,
+    var(--bg-2);
+}
+
+.oc-canvas-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.oc-edge {
+  fill: none;
+  stroke: rgba(139, 211, 255, 0.55);
+  stroke-width: 2;
+  stroke-dasharray: 6 6;
+  animation: oc-flow-dash 0.8s linear infinite;
+}
+
+.oc-canvas-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent, var(--cyan));
+  background: var(--surface);
+  box-shadow: 0 0 18px -6px var(--accent, var(--cyan));
+  animation: oc-pulse 2.6s var(--ease) infinite;
+}
+
+.oc-canvas-node-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.oc-canvas-node-id {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--muted-2);
+}
+
+.oc-canvas-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted-2);
+  font-size: 12px;
+}
+
+.oc-future {
+  font-size: 11px;
+  color: var(--amber);
+  text-align: center;
+  opacity: 0.8;
+}
+
+/* —— 手动：对话 —— */
+.oc-chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.oc-msg {
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 7px 11px;
+  border-radius: var(--radius-sm);
+  max-width: 88%;
+}
+
+.oc-msg-system {
+  align-self: center;
+  color: var(--muted-2);
+  font-size: 11px;
+  background: transparent;
+}
+
+.oc-msg-user {
+  align-self: flex-end;
+  color: #05060b;
+  background: var(--plasma);
+  border-bottom-right-radius: 4px;
+}
+
+.oc-msg-assistant {
+  align-self: flex-start;
+  color: var(--text);
+  background: var(--glass-strong);
+  border: 1px solid var(--line);
+  border-bottom-left-radius: 4px;
+}
+
+.oc-chat-form {
+  display: flex;
+  gap: 8px;
+}
+
+.oc-chat-input {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.oc-chat-input:focus {
+  outline: none;
+  border-color: var(--violet);
+  box-shadow: var(--glow-violet);
+}
+
+.oc-send {
+  width: 42px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--plasma);
+  color: #05060b;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.2s var(--ease);
+}
+
+.oc-send:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--glow-cyan);
+}
+
+.oc-ai-hint {
+  font-size: 11px;
+  color: var(--muted-2);
+  text-align: center;
+  font-family: var(--mono);
+}
+
+/* —— 动效 —— */
+@keyframes oc-pulse {
+  0%, 100% { box-shadow: 0 0 14px -4px var(--accent, var(--cyan)); }
+  50% { box-shadow: 0 0 22px 0 var(--accent, var(--cyan)); }
+}
+
+@keyframes oc-flow {
+  0% { background-position: 0% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes oc-flow-dash {
+  to { stroke-dashoffset: -12; }
+}
+
+@keyframes oc-reveal {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 900px) {
+  .oc-modes {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .oc-canvas {
+    max-height: 220px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oc-node.lit,
+  .oc-canvas-node,
+  .oc-link.lit,
+  .oc-edge {
+    animation: none;
+  }
+}
