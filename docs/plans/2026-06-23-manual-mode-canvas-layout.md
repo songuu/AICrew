@@ -77,10 +77,13 @@ invariant_tests:
 | 安全 | 纯前端布局，无新输入/密钥/边界。✓ |
 | 性能 | 无新订阅/计算；条件渲染减少手动模式 DOM。✓ |
 | 测试覆盖 | invariant 回归绿；布局为视觉项，与现有测试策略一致（仓库无组件测试），风险 L2。✓ |
-| 第6视角 集成连续性 | **P1**：手动隐藏 OUTPUT → 运行 Director 结果不在 workbench 手动视图显示（仍可在 Dashboard/Projects/Exports + 通知查看）。是用户所选布局的直接后果，非回归。 |
+| 第6视角 集成连续性 | **P1（已解决）**：手动运行 Director 后 OUTPUT + Runtime 于画布下方整宽显现（见 T8）。默认仍无 OUTPUT（画布为主区），运行后才出，切模式复位。 |
 
-### P1 已知限制 / 后续
-- **手动模式运行结果可见性**：手动视图无 OUTPUT 面板。后续可选方案：运行后在手动 stage 顶部加结果 banner，或运行完成切回非手动模式（需避免 switchMode 重置 flow）。本轮按用户所选布局交付，列为 follow-up。
+### P1 解决（T8）
+- **手动模式运行结果可见性**：Workbench 加 `manualResultShown` 状态，包 `handleRunFlow`（手动运行完成置真）+ `handleModeChange`（切模式复位）。手动运行后 `.workbench-layout.is-manual.manual-result` 切 3 行（compose/canvas/run），OUTPUT + Runtime 整宽显现于画布下方。**不切模式、不重置 flow、最小惊扰**；非手动模式 OUTPUT 始终在，标记无副作用。
+- 验证：`npm run build` 通过、`npm test` 121/121。
+
+### 后续（非阻塞）
 - **死 CSS**：`.bottom-tool-dock` 系列规则随 JSX 移除已无元素命中（无害），可在后续清理时一并删除。
 
 ## Phase 5: 复利记录

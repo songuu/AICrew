@@ -1180,10 +1180,22 @@ button {
 }
 
 /* 手动模式：流程画布接管右侧主区，oc-panel 跨满整行；
-   OUTPUT 预览 + Runtime 面板已在 Workbench JSX 中条件不渲染。 */
+   OUTPUT 预览 + Runtime 面板默认在 Workbench JSX 中条件不渲染。 */
 .workbench-layout.is-manual {
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas: "compose";
+}
+
+/* 运行 Director 后：画布主区在上，OUTPUT + Runtime 整宽在下显现（P1：手动运行结果可见）。 */
+.workbench-layout.is-manual.manual-result {
+  grid-template-areas:
+    "compose"
+    "canvas"
+    "run";
+}
+
+.workbench-layout.is-manual.manual-result .workspace-canvas {
+  min-height: 0;
 }
 
 .brief-form {

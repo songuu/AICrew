@@ -737,19 +737,35 @@ function Workbench({
   // orchestrator mode 上提到 Workbench：手动模式要让画布占右侧主栏、隐藏 OUTPUT/Runtime，
   // 这些决策在 OrchestratorConsole 之外，故 mode 必须由外层持有并按其重排布局。
   const [orchMode, setOrchMode] = useState("auto");
+  // 手动模式默认无 OUTPUT 面板（画布占主区）；运行 Director 后才在画布下方显现结果，
+  // 既保留「画布为主区」又解决「手动运行结果不可见」(P1)。切换模式时复位。
+  const [manualResultShown, setManualResultShown] = useState(false);
   const isManual = orchMode === "manual";
+
+  // 切模式复位结果显现，避免上一轮结果残留到新模式/新编排。
+  function handleModeChange(nextMode) {
+    setOrchMode(nextMode);
+    setManualResultShown(false);
+  }
+  // 包一层：手动模式运行完成后显现 OUTPUT（非手动模式 OUTPUT 始终在，无需此标记）。
+  async function handleRunFlow(brief, flow, meta) {
+    await onRunFlow(brief, flow, meta);
+    if (orchMode === "manual") setManualResultShown(true);
+  }
+
+  const showOutput = !isManual || manualResultShown;
   return (
-    <div className={`workbench-layout ${isManual ? "is-manual" : ""}`}>
+    <div className={`workbench-layout ${isManual ? "is-manual" : ""} ${isManual && manualResultShown ? "manual-result" : ""}`}>
       <OrchestratorConsole
         mode={orchMode}
-        onModeChange={setOrchMode}
-        onRun={onRunFlow}
+        onModeChange={handleModeChange}
+        onRun={handleRunFlow}
         generating={generating}
         aiReady={isAiConfigured(aiConfig)}
         task={task}
       />
-      {/* 手动模式：流程画布接管右侧主区，OUTPUT 预览 + Runtime 面板隐藏（见 sprint 决策）*/}
-      {!isManual && (
+      {/* 手动模式：流程画布接管右侧主区；OUTPUT + Runtime 默认隐藏，运行后于画布下方整宽显现 */}
+      {showOutput && (
         <>
       <section className="workspace-canvas">
         <div className="canvas-toolbar">
@@ -951,10 +967,10 @@ function Exports({ state }) {
         <div className="export-grid">
           {state.exports.map(item => (
             <article className="export-card" key={item.id}>
-              <div className="export-icon">{item.files.some(file => file.endsWith(".mp4")) ? "MP4" : "IMG"}</div>
+              <div className="export-icon">{item.fileNames.some(name => name.endsWith(".mp4")) ? "MP4" : "IMG"}</div>
               <strong>{item.name}</strong>
               <span>
-                {item.platform} · {item.files.join(" / ")}
+                {item.platform} · {item.fileNames.join(" / ")}
               </span>
               <small>{formatDate(item.createdAt)}</small>
             </article>
