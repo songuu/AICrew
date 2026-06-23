@@ -571,6 +571,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               aiConfig={aiConfig}
               onRetryAgent={retryAgent}
               onModeChange={setWorkbenchMode}
+              onGenerateImage={isAiConfigured(aiConfig) ? generateCanvasImage : undefined}
             />
           )}
           {view === "canvas" && (
@@ -831,7 +832,8 @@ function Workbench({
   generating,
   aiConfig,
   onRetryAgent,
-  onModeChange
+  onModeChange,
+  onGenerateImage
 }) {
   // orchestrator mode 上提到 Workbench：手动模式要让画布占右侧主栏、隐藏 OUTPUT/Runtime，
   // 这些决策在 OrchestratorConsole 之外，故 mode 必须由外层持有并按其重排布局。
@@ -867,6 +869,7 @@ function Workbench({
         aiReady={isAiConfigured(aiConfig)}
         aiConfig={aiConfig}
         task={task}
+        onGenerateImage={onGenerateImage}
       />
       {/* 手动模式：流程画布接管右侧主区；OUTPUT + Runtime 默认隐藏，运行后于画布下方整宽显现 */}
       {showOutput && (
