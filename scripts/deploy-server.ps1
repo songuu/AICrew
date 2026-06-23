@@ -201,7 +201,7 @@ $quotedAppName = Quote-BashValue $AppName
 $quotedHostName = Quote-BashValue $HostName
 $quotedPort = Quote-BashValue ([string]$Port)
 
-$installCommand = 'if [ -d "$C/node_modules" ] && [ -f "$C/package-lock.json" ] && cmp -s "$C/package-lock.json" "$D/package-lock.json"; then cp -a "$C/node_modules" "$D/node_modules"; echo "Reused current node_modules"; else npm ci --omit=dev --no-audit --no-fund; fi'
+$installCommand = 'runtime_deps_match() { node -e ''const fs=require("fs"); const [currentPath,releasePath]=process.argv.slice(1); const pick=(root)=>{const pkg=JSON.parse(fs.readFileSync(`${root}/package.json`,"utf8")); return JSON.stringify({dependencies:pkg.dependencies||{},optionalDependencies:pkg.optionalDependencies||{},peerDependencies:pkg.peerDependencies||{},overrides:pkg.overrides||{}});}; process.exit(pick(currentPath)===pick(releasePath)?0:1);'' "$C" "$D"; }; if [ -d "$C/node_modules" ] && { cmp -s "$C/package-lock.json" "$D/package-lock.json" || runtime_deps_match; }; then cp -a "$C/node_modules" "$D/node_modules"; echo "Reused current node_modules"; else npm ci --omit=dev --no-audit --no-fund; fi'
 if ($SkipRemoteInstall) {
   $installCommand = "echo 'Skipping remote dependency install'"
 }

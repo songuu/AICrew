@@ -136,8 +136,25 @@ jobs:
           chmod 600 "${REMOTE_RELEASE}/.env"
           cd "${REMOTE_RELEASE}"
 
-          # 复用上一个 release 的 node_modules（lockfile 一致时），否则纯净安装生产依赖。
-          if [ -d "${CURRENT_LINK}/node_modules" ] && [ -f "${CURRENT_LINK}/package-lock.json" ] && cmp -s "${CURRENT_LINK}/package-lock.json" "${REMOTE_RELEASE}/package-lock.json"; then
+          # 复用上一个 release 的 node_modules：完整 lockfile 相同，或生产运行依赖未变化。
+          runtime_deps_match() {
+            node -e '
+              const fs = require("fs");
+              const [currentPath, releasePath] = process.argv.slice(1);
+              const pick = (root) => {
+                const pkg = JSON.parse(fs.readFileSync(`${root}/package.json`, "utf8"));
+                return JSON.stringify({
+                  dependencies: pkg.dependencies || {},
+                  optionalDependencies: pkg.optionalDependencies || {},
+                  peerDependencies: pkg.peerDependencies || {},
+                  overrides: pkg.overrides || {}
+                });
+              };
+              process.exit(pick(currentPath) === pick(releasePath) ? 0 : 1);
+            ' "${CURRENT_LINK}" "${REMOTE_RELEASE}"
+          }
+
+          if [ -d "${CURRENT_LINK}/node_modules" ] && { cmp -s "${CURRENT_LINK}/package-lock.json" "${REMOTE_RELEASE}/package-lock.json" || runtime_deps_match; }; then
             cp -a "${CURRENT_LINK}/node_modules" "${REMOTE_RELEASE}/node_modules"
             echo "Reused current node_modules"
           else
