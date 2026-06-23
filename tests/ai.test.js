@@ -591,3 +591,47 @@ test("Hook Lab (hook node) adds a multi-candidate hook instruction; non-hook ski
   assert.ok(hookPrompts.every(prompt => prompt.includes("候选钩子")), "Hook Lab prompt should request candidate hooks");
   assert.ok(plainPrompts.every(prompt => !prompt.includes("候选钩子")), "non-hook skill must not get the Hook Lab instruction");
 });
+
+// ---- agent expansion: trend / persona / seo prompt injection (gated on node presence) ----
+test("trend/persona/seo nodes inject their guidance into copy prompt; absent when not orchestrated", async () => {
+  const fullPrompts = [];
+  const { fetchImpl: fullFetch } = makeFetch(promptCaptureRouter(fullPrompts, []));
+  await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "viral_content_engine_v1", // 含 trend + persona + seo
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl: fullFetch
+  });
+  assert.ok(fullPrompts.length > 0);
+  assert.ok(fullPrompts.every(p => p.includes("选题角度")), "trend guidance missing");
+  assert.ok(fullPrompts.every(p => p.includes("人设口吻")), "persona guidance missing");
+  assert.ok(fullPrompts.every(p => p.includes("搜索优化")), "seo guidance missing");
+
+  // 合成 copy-only skill（无 trend/persona/seo 节点）→ 三段指引都不应出现（向后兼容 / 节点门控）
+  const barePrompts = [];
+  const { fetchImpl: bareFetch } = makeFetch(promptCaptureRouter(barePrompts, []));
+  await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "露营灯", platform: "小红书" }),
+    skill: {
+      id: "syn_copy_only",
+      name: "syn",
+      category: "Flow",
+      stage: "manual",
+      estimatedCredits: 12,
+      formats: ["文案"],
+      agents: ["copy", "qa"],
+      palette: ["#8bd3ff"],
+      promise: "x",
+      bestFor: ""
+    },
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl: bareFetch
+  });
+  assert.ok(barePrompts.length > 0);
+  assert.ok(
+    barePrompts.every(p => !p.includes("选题角度") && !p.includes("人设口吻") && !p.includes("搜索优化")),
+    "copy-only skill must not get trend/persona/seo guidance"
+  );
+});

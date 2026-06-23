@@ -412,3 +412,56 @@ test("buildExportFiles keeps video.mp4 a placeholder (no binary this sprint)", (
   assert.equal(files.find(file => file.name === "video.mp4").kind, "placeholder");
   assert.ok(files.find(file => file.name === "storyboard.csv").content.startsWith("time,shot,action,caption"));
 });
+
+// ---- agent expansion + flow optimization (trend / persona / seo) ----
+test("catalog exposes new trend/persona/seo agents with full contract", () => {
+  for (const id of ["trend", "persona", "seo"]) {
+    const agent = agents.find(a => a.id === id);
+    assert.ok(agent, `${id} agent missing from catalog`);
+    assert.ok(agent.responsibility && agent.input && agent.output && agent.evaluation, `${id} contract fields missing`);
+    assert.ok(agent.cost > 0 && agent.tools.length >= 2, `${id} cost/tools missing`);
+  }
+});
+
+test("new agents produce distinct artifacts/summaries (not dead nodes) when orchestrated", () => {
+  const task = runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "viral_content_engine_v1",
+    brandKit: defaultBrandKit
+  });
+  for (const id of ["trend", "persona", "seo"]) {
+    const step = task.agents.find(a => a.id === id);
+    assert.ok(step, `${id} not orchestrated in flagship pipeline`);
+    assert.ok(step.artifact && step.artifact !== "Agent artifact recorded", `${id} should have a distinct artifact`);
+    assert.ok(step.summary && step.summary !== "完成工作流步骤。", `${id} should have a distinct summary`);
+  }
+  // 派生契约仍同构：plan === agent ids，events 数 === agents 数
+  assert.deepEqual(task.orchestrator.plan, task.agents.map(a => a.id));
+  assert.equal(task.events.length, task.agents.length);
+});
+
+test("flagship viral_content_engine_v1 is featured, image-first, full-chain", () => {
+  const skill = skills.find(s => s.id === "viral_content_engine_v1");
+  assert.ok(skill, "viral_content_engine_v1 missing");
+  assert.equal(skill.featured, true);
+  assert.ok(!skill.agents.includes("video"), "flagship is image-first");
+  for (const id of ["trend", "strategy", "hook", "persona", "copy", "seo", "qa", "export"]) {
+    assert.ok(skill.agents.includes(id), `flagship pipeline missing ${id}`);
+  }
+  const task = runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "viral_content_engine_v1"
+  });
+  assert.equal(task.variants.length, 3); // 提质不增量：变体数仍恒 3
+  assert.ok(task.qa.overallScore >= 80);
+});
+
+test("flow optimization wires new agents into existing skills without breaking contracts", () => {
+  const ecom = skills.find(s => s.id === "ecom_tiktok_product_ad_v1");
+  assert.ok(ecom.agents.includes("trend") && ecom.agents.includes("seo"));
+  assert.ok(ecom.agents.length >= 8); // 只增不减，守 domain.test 主 skill 契约
+  const rednote = skills.find(s => s.id === "rednote_seeding_note_v1");
+  assert.ok(["trend", "persona", "seo"].every(id => rednote.agents.includes(id)));
+  const ugc = skills.find(s => s.id === "ugc_review_v1");
+  assert.ok(ugc.agents.includes("persona"));
+});
