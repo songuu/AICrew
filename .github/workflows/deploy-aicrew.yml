@@ -81,15 +81,15 @@ jobs:
           set -euo pipefail
           test -d .next
           test -d .next/server
-          test -f app/api/ai/config/route.js
-          test -f app/api/ai/generate/route.js
+          test -f app/api/ai/config/route.ts
+          test -f app/api/ai/generate/route.ts
 
       - name: Package server release
         run: |
           set -euo pipefail
           rm -rf .next/cache
           archive="${RUNNER_TEMP}/aicrew-server-${GITHUB_SHA}.tgz"
-          items="app src .next package.json package-lock.json next.config.mjs .env"
+          items="app components lib styles .next package.json package-lock.json next.config.mjs tsconfig.json next-env.d.ts .env"
           if [ -d public ]; then items="${items} public"; fi
           tar -czf "${archive}" ${items}
           echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"

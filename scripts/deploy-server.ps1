@@ -153,8 +153,8 @@ if (-not $SkipBuild) {
 Step "Build self-check"
 Require-Path ".next" "Next build directory"
 Require-Path ".next/server" "Next server output"
-Require-Path "app/api/ai/config/route.js" "AI config route"
-Require-Path "app/api/ai/generate/route.js" "AI generate route"
+Require-Path "app/api/ai/config/route.ts" "AI config route"
+Require-Path "app/api/ai/generate/route.ts" "AI generate route"
 
 $timestamp = Get-Date -Format "yyyyMMddHHmmss"
 $releaseName = "aicrew-server-$timestamp"
@@ -172,7 +172,7 @@ if (Test-Path -LiteralPath $stageRoot) {
 New-Item -ItemType Directory -Path $stageRoot | Out-Null
 
 Step "Prepare release package"
-$releaseItems = @("app", "src", ".next", "package.json", "package-lock.json", "next.config.mjs", $EnvFile)
+$releaseItems = @("app", "components", "lib", "styles", ".next", "package.json", "package-lock.json", "next.config.mjs", "tsconfig.json", "next-env.d.ts", $EnvFile)
 if (Test-Path -LiteralPath "public") { $releaseItems += "public" }
 foreach ($item in $releaseItems) {
   Require-Path $item "release item"
