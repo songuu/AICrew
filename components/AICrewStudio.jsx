@@ -199,6 +199,8 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   // AI 平台配置来自 server env；浏览器只保存“选择哪个系统模型”的 id，不接收 token/baseURL。
   const [aiConfig, setAiConfig] = useState(() => normalizeSystemAiConfig());
   const [generating, setGenerating] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [workbenchMode, setWorkbenchMode] = useState("auto");
 
   useEffect(() => {
     let alive = true;
@@ -527,8 +529,15 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   }
 
   return (
-    <div className="app-shell">
-      <Sidebar state={state} view={view} navigate={navigate} aiConfig={aiConfig} />
+    <div className={`app-shell ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}`}>
+      <Sidebar
+        state={state}
+        view={view}
+        navigate={navigate}
+        aiConfig={aiConfig}
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={() => setSidebarCollapsed(value => !value)}
+      />
       <main className="main-surface">
         <Topbar state={state} view={view} navigate={navigate} resetDemo={resetDemo} />
         <section className="page-stack">
@@ -561,6 +570,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               generating={generating}
               aiConfig={aiConfig}
               onRetryAgent={retryAgent}
+              onModeChange={setWorkbenchMode}
             />
           )}
           {view === "canvas" && (
@@ -582,22 +592,34 @@ export function AICrewStudio({ initialView = "dashboard" }) {
           {view === "onboarding" && <Onboarding state={state} updateProfile={updateProfile} />}
         </section>
       </main>
-      <FloatingCommandLayer state={state} view={view} navigate={navigate} />
+      <FloatingCommandLayer state={state} view={view} navigate={navigate} manualWorkbench={view === "workbench" && workbenchMode === "manual"} />
     </div>
   );
 }
 
-function Sidebar({ state, view, navigate, aiConfig }) {
+function Sidebar({ state, view, navigate, aiConfig, collapsed, onToggleCollapsed }) {
   const creditRatio = Math.min(100, Math.round((state.workspace.credits / state.workspace.monthlyCredits) * 100));
   return (
-    <aside className="sidebar">
-      <button className="brand-lockup reset-button" onClick={() => navigate("dashboard")} aria-label="AICrew Studio">
-        <span className="brand-mark">AI</span>
-        <span>
-          <strong>AICrew</strong>
-          <small>Creative OS</small>
-        </span>
-      </button>
+    <aside className={`sidebar ${collapsed ? "is-collapsed" : ""}`}>
+      <div className="sidebar-head">
+        <button className="brand-lockup reset-button" onClick={() => navigate("dashboard")} aria-label="AICrew Studio">
+          <span className="brand-mark">AI</span>
+          <span>
+            <strong>AICrew</strong>
+            <small>Creative OS</small>
+          </span>
+        </button>
+        <button
+          type="button"
+          className="sidebar-toggle reset-button"
+          onClick={onToggleCollapsed}
+          aria-label={collapsed ? "展开左侧栏" : "折叠左侧栏"}
+          aria-pressed={collapsed}
+          title={collapsed ? "展开左侧栏" : "折叠左侧栏"}
+        >
+          <span>{collapsed ? "›" : "‹"}</span>
+        </button>
+      </div>
       <SidebarAssistant state={state} aiConfig={aiConfig} navigate={navigate} />
       <nav className="nav-list" aria-label="Main navigation">
         {navItems.map(([id, label, icon]) => (
@@ -686,13 +708,13 @@ function Topbar({ state, view, navigate, resetDemo }) {
   );
 }
 
-function FloatingCommandLayer({ state, view, navigate }) {
+function FloatingCommandLayer({ state, view, navigate, manualWorkbench }) {
   const latestTask = state.tasks?.[0];
   const agentsOnline = latestTask?.agents?.length || 0;
   // 画布视图自带真实工具坞，隐藏全局装饰 dock 避免双坞重叠。
   if (view === "canvas") return null;
   return (
-    <div className="floating-command-layer" aria-hidden={false}>
+    <div className={`floating-command-layer ${manualWorkbench ? "is-manual-workbench" : ""}`} aria-hidden={false}>
       <div className="right-tool-rail" aria-label="Quick actions">
         <button type="button" title="Open workbench" onClick={() => navigate("workbench")}>
           <span>+</span>
@@ -709,11 +731,13 @@ function FloatingCommandLayer({ state, view, navigate }) {
       </div>
       {/* 底部操作栏（选择/抓手/添加/撤销/重做）已迁移为手动模式画布专属操作坞（oc-canvas-dock），
           满足「只在手动模式显示」要求；此处全局装饰版移除，避免双坞与跨模式显示。*/}
-      <div className="zoom-dock" aria-label="Canvas status">
-        <span>{agentsOnline} agents</span>
-        <strong>{state.workspace.credits.toLocaleString()}</strong>
-        <em>credits</em>
-      </div>
+      {!manualWorkbench && (
+        <div className="zoom-dock" aria-label="Canvas status">
+          <span>{agentsOnline} agents</span>
+          <strong>{state.workspace.credits.toLocaleString()}</strong>
+          <em>credits</em>
+        </div>
+      )}
     </div>
   );
 }
@@ -806,7 +830,8 @@ function Workbench({
   exportVariant,
   generating,
   aiConfig,
-  onRetryAgent
+  onRetryAgent,
+  onModeChange
 }) {
   // orchestrator mode 上提到 Workbench：手动模式要让画布占右侧主栏、隐藏 OUTPUT/Runtime，
   // 这些决策在 OrchestratorConsole 之外，故 mode 必须由外层持有并按其重排布局。
@@ -815,6 +840,10 @@ function Workbench({
   // 既保留「画布为主区」又解决「手动运行结果不可见」(P1)。切换模式时复位。
   const [manualResultShown, setManualResultShown] = useState(false);
   const isManual = orchMode === "manual";
+
+  useEffect(() => {
+    onModeChange?.(orchMode);
+  }, [orchMode, onModeChange]);
 
   // 切模式复位结果显现，避免上一轮结果残留到新模式/新编排。
   function handleModeChange(nextMode) {

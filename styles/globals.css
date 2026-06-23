@@ -3776,6 +3776,104 @@ body::after {
   }
 }
 
+
+/* Sidebar collapse — desktop only, shared by every view/mode. */
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sidebar-head .brand-lockup {
+  flex: 1 1 auto;
+}
+
+.sidebar-toggle {
+  display: grid;
+  place-items: center;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  color: #f7f7fb;
+  background: rgba(255, 255, 255, 0.055);
+  cursor: pointer;
+  transition: border-color 180ms var(--ease), background 180ms var(--ease), transform 180ms var(--ease);
+}
+
+.sidebar-toggle:hover {
+  border-color: rgba(180, 140, 255, 0.46);
+  background: rgba(124, 69, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.sidebar-toggle span {
+  font-size: 20px;
+  line-height: 1;
+}
+
+@media (min-width: 981px) {
+  .app-shell.is-sidebar-collapsed {
+    grid-template-columns: 88px minmax(0, 1fr);
+  }
+
+  .app-shell.is-sidebar-collapsed .sidebar {
+    padding: 16px 10px;
+    overflow: hidden;
+  }
+
+  .app-shell.is-sidebar-collapsed .sidebar-head {
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .app-shell.is-sidebar-collapsed .brand-lockup {
+    flex: 0 0 auto;
+    justify-content: center;
+    width: 100%;
+  }
+
+  .app-shell.is-sidebar-collapsed .brand-lockup > span:not(.brand-mark),
+  .app-shell.is-sidebar-collapsed .assistant-card,
+  .app-shell.is-sidebar-collapsed .nav-item em,
+  .app-shell.is-sidebar-collapsed .sidebar-footer .text-link {
+    display: none;
+  }
+
+  .app-shell.is-sidebar-collapsed .nav-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell.is-sidebar-collapsed .nav-item {
+    min-height: 54px;
+    padding: 8px;
+  }
+
+  .app-shell.is-sidebar-collapsed .nav-item span {
+    font-size: 18px;
+  }
+
+  .app-shell.is-sidebar-collapsed .sidebar-footer {
+    padding: 10px 4px;
+  }
+
+  .app-shell.is-sidebar-collapsed .credit-ring {
+    width: 54px;
+    height: 54px;
+    margin: 0 auto;
+  }
+
+  .app-shell.is-sidebar-collapsed .credit-ring span {
+    font-size: 13px;
+  }
+
+  .app-shell.is-sidebar-collapsed .credit-ring small {
+    display: none;
+  }
+}
+
 /* =====================================================================
    Orchestrator Console — 三模式编排台（科幻）
    一个 Flow，三种创作方式：自动 / 半自动 / 手动。
@@ -4584,6 +4682,7 @@ body::after {
 
 /* 右侧画布主区：纵向排布，画布 flex 撑满，底部操作坞贴底。 */
 .oc-manual-stage {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -5004,14 +5103,24 @@ body::after {
 
 /* —— 手动画布底部操作坞（选择/抓手/添加/撤销/重做）：仅手动模式出现 —— */
 .oc-canvas-dock {
+  position: fixed;
+  right: 126px;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  z-index: 45;
   display: flex;
   align-items: stretch;
+  justify-content: flex-end;
   gap: 8px;
+  width: fit-content;
+  max-width: calc(100vw - 144px);
   padding: 8px;
   border-radius: 14px;
   border: 1px solid var(--line);
   background: var(--glass-strong);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.34);
+  pointer-events: auto;
 }
 
 .oc-dock-btn {
@@ -5277,6 +5386,28 @@ body::after {
   .workbench-layout.is-manual:not(.manual-result) {
     display: grid;
     height: auto;
+  }
+  .oc-canvas-dock {
+    right: 18px;
+    max-width: calc(100vw - 36px);
+  }
+}
+
+@media (max-width: 1700px) {
+  .oc-canvas-dock {
+    right: 18px;
+    max-width: calc(100vw - 36px);
+  }
+}
+
+@media (max-width: 760px) {
+  .oc-canvas-dock {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: auto;
+    max-width: none;
+    flex-wrap: wrap;
   }
 }
 
