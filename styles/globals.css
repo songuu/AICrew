@@ -3792,6 +3792,12 @@ body::after {
   overflow: hidden;
 }
 
+.oc-panel.is-skill-open {
+  /* Skill picker must escape the glass card and sit above following runtime panels. */
+  overflow: visible;
+  z-index: 20;
+}
+
 .oc-panel::after {
   /* 中枢核心余晖：左上角的能量光晕 */
   content: "";
@@ -4048,6 +4054,12 @@ body::after {
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--surface-2);
+}
+
+.oc-params.is-skill-open {
+  /* Direct sibling sections share z-index:1; lift the whole params stack while the picker is open. */
+  position: relative;
+  z-index: 50;
 }
 
 .oc-param {
@@ -4640,6 +4652,11 @@ body::after {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.oc-composer.is-skill-open {
+  position: relative;
+  z-index: 50;
 }
 .oc-quick {
   display: flex;

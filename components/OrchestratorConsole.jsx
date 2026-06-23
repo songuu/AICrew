@@ -541,7 +541,7 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
 
   // 创作参数条：平台 / 受众 / 指定 skill / 上传素材，三模式共用（PRD §8.2 required_inputs）。
   const paramsBar = (
-    <div className="oc-params">
+    <div className={`oc-params ${skillPickerOpen && mode !== "manual" ? "is-skill-open" : ""}`}>
       <div className="oc-param">
         <span className="oc-param-label">平台</span>
         <div className="oc-param-platforms" role="group" aria-label="目标平台">
@@ -620,7 +620,7 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
   // 右：流程画布主区填满 + 底部操作坞。布局填满视口高度由 CSS .is-manual 高度链负责。
   if (mode === "manual") {
     return (
-      <section className="panel oc-panel oc-panel-manual">
+      <section className={`panel oc-panel oc-panel-manual ${skillPickerOpen ? "is-skill-open" : ""}`}>
         <div className="oc-manual-grid">
           <div className="oc-manual-side">
             {modeBlock}
@@ -667,7 +667,7 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
             </div>
 
             {/* 钉底输入区：技能选择（chip + 浮层）+ 快捷指令 + 输入框 + 发送 + 运行 */}
-            <div className="oc-composer">
+            <div className={`oc-composer ${skillPickerOpen ? "is-skill-open" : ""}`}>
               {/* RoboNeo 形态：技能以 chip / trigger 锚定在输入框上方，点击浮层选择 */}
               <div className="oc-skill-row">{skillField}</div>
               <div className="oc-quick" role="group" aria-label="快捷指令">
@@ -708,7 +708,7 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
 
   // —— 自动 / 半自动：维持现扁平三栏布局，零改动 ——
   return (
-    <section className="panel oc-panel">
+    <section className={`panel oc-panel ${skillPickerOpen ? "is-skill-open" : ""}`}>
       {modeBlock}
       {ideaField}
       {paramsBar}
