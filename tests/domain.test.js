@@ -15,6 +15,9 @@ import {
   normalizeBrief,
   orchestratorAgent,
   parseBriefText,
+  recommendRednoteSkills,
+  rednotePromotionSkills,
+  rednotePromotionStages,
   reviseVariantHook,
   retryAgentStep,
   runCreativeWorkflow,
@@ -203,12 +206,39 @@ test("detects 小红书 platform from freeform brief", () => {
   assert.equal(brief.platform, "小红书");
 });
 
+const realDemandSkillIds = [
+  "detail_page_conversion_v1",
+  "ad_ab_test_pack_v1",
+  "private_domain_conversion_v1",
+  "ingredient_explainer_cards_v1",
+  "new_product_launch_matrix_v1",
+  "local_life_store_visit_v1",
+  "knowledge_ip_shortvideo_v1",
+  "comment_reply_conversion_v1"
+];
+const rednoteSystemSkillIds = [
+  "rednote_account_diagnostic_v1",
+  "rednote_competitor_benchmark_v1",
+  "rednote_search_intent_map_v1",
+  "rednote_topic_calendar_v1",
+  "rednote_seo_note_v1",
+  "rednote_cover_title_ab_v1",
+  "rednote_product_comparison_v1",
+  "rednote_scenario_seed_v1",
+  "rednote_video_note_v1",
+  "rednote_koc_brief_v1",
+  "rednote_kol_matrix_v1",
+  "rednote_juguang_launch_v1",
+  "rednote_search_keyword_boost_v1",
+  "rednote_comment_dm_conversion_v1",
+  "rednote_performance_review_v1"
+];
 // ---- RoboNeo 式技能选择器：数据模型 ----
 test("skillGroups exposes 推荐 first, then the 带货 categories", () => {
   assert.equal(skillGroups[0].id, "featured");
   assert.equal(skillGroups[0].name, "推荐");
   const ids = skillGroups.map(group => group.id);
-  assert.deepEqual(ids, ["featured", "ecom", "beauty", "shortvideo"]);
+  assert.deepEqual(ids, ["featured", "rednote", "ecom", "beauty", "shortvideo"]);
 });
 
 test("every skill carries picker metadata (icon/group/promise/bestFor)", () => {
@@ -221,6 +251,122 @@ test("every skill carries picker metadata (icon/group/promise/bestFor)", () => {
   }
 });
 
+test("catalog adds real-demand skills instead of placeholder templates", () => {
+  assert.ok(skills.length >= 19);
+  assert.equal(new Set(skills.map(skill => skill.id)).size, skills.length);
+
+  const groups = new Set();
+  for (const id of realDemandSkillIds) {
+    const skill = skills.find(item => item.id === id);
+    assert.ok(skill, `${id} missing from catalog`);
+    groups.add(skill.group);
+    assert.ok(skill.formats.length >= 4, `${id} should describe concrete deliverables`);
+    assert.ok(skill.agents.includes("qa"), `${id} should include QA for production use`);
+    assert.ok(skill.agents.includes("export"), `${id} should include export for delivery`);
+    assert.ok(skill.promise.length >= 24, `${id} promise is too thin`);
+    assert.ok(skill.bestFor.length >= 16, `${id} bestFor is too thin`);
+    assert.doesNotMatch(`${skill.name} ${skill.promise} ${skill.bestFor}`, /占位|待定|假数据|通用模板/);
+  }
+
+  assert.deepEqual([...groups].sort(), ["beauty", "ecom", "shortvideo"]);
+  assert.ok(realDemandSkillIds.some(id => skills.find(skill => skill.id === id).featured));
+});
+
+test("new real-demand skills run and keep video/image delivery contracts", () => {
+  for (const id of realDemandSkillIds) {
+    const skill = findSkill(id);
+    const task = runCreativeWorkflow({
+      brief: normalizeBrief({
+        productName: "新品测试套装",
+        platform: skill.group === "beauty" ? "小红书" : "抖音",
+        targetAudience: "内容运营团队"
+      }),
+      skillId: id,
+      brandKit: defaultBrandKit
+    });
+
+    assert.equal(task.skillId, id);
+    assert.equal(task.status, "completed");
+    assert.equal(task.agents.length, skill.agents.length);
+    assert.equal(task.exports.length, 3);
+
+    if (skill.agents.includes("video")) {
+      assert.ok(task.exports[0].fileNames.includes("video.mp4"), `${id} should export video`);
+      assert.equal(task.variants[0].duration, 15);
+      assert.ok(task.credits.video > 0, `${id} should bill video credits`);
+    } else {
+      assert.ok(!task.exports[0].fileNames.includes("video.mp4"), `${id} should be image-first`);
+      assert.equal(task.variants[0].duration, null);
+      assert.equal(task.credits.video, 0);
+      assert.ok(task.qa.checks.some(check => check.label === "封面/标题吸引力"));
+    }
+  }
+});
+test("rednote promotion skill system covers the full recommendation funnel", () => {
+  assert.deepEqual(
+    rednotePromotionStages.map(stage => stage.id),
+    ["diagnosis", "search_strategy", "content_production", "creator_seeding", "paid_amplification", "conversion", "measurement"]
+  );
+
+  const rednoteSkills = rednotePromotionSkills();
+  const rednoteIds = rednoteSkills.map(skill => skill.id);
+  for (const id of rednoteSystemSkillIds) {
+    assert.ok(rednoteIds.includes(id), `${id} missing from rednote promotion system`);
+  }
+  assert.ok(rednoteIds.includes("rednote_seeding_note_v1"), "existing rednote seeding skill should stay in the system");
+  assert.ok(rednoteIds.includes("ugc_review_v1"), "UGC review should be part of rednote promotion");
+
+  const coveredStages = new Set(rednoteSkills.map(skill => skill.rednoteStage).filter(Boolean));
+  assert.deepEqual([...coveredStages].sort(), rednotePromotionStages.map(stage => stage.id).sort());
+});
+
+test("rednote promotion skills are production-ready, not generic templates", () => {
+  for (const skill of rednotePromotionSkills()) {
+    assert.equal(skill.platform, "小红书", `${skill.id} should be scoped to 小红书`);
+    assert.ok(skill.rednoteStage, `${skill.id} missing rednoteStage`);
+    assert.ok((skill.recommendTags || []).length >= 4, `${skill.id} should expose recommendation tags`);
+    assert.ok(skill.formats.length >= 4, `${skill.id} should describe concrete deliverables`);
+    assert.ok(skill.agents.includes("qa"), `${skill.id} should include QA`);
+    assert.ok(skill.agents.includes("export"), `${skill.id} should include export`);
+    assert.doesNotMatch(`${skill.name} ${skill.promise} ${skill.bestFor}`, /占位|待定|假数据|通用模板/);
+  }
+});
+
+test("skillsInGroup(rednote) returns the complete 小红书 promotion system", () => {
+  const byGroup = skillsInGroup("rednote").map(skill => skill.id);
+  const bySystem = rednotePromotionSkills().map(skill => skill.id);
+  assert.deepEqual(byGroup, bySystem);
+  assert.ok(byGroup.length >= 19);
+});
+
+test("recommendRednoteSkills routes real promotion intents to the right skill", () => {
+  assert.equal(recommendRednoteSkills({ query: "搜索排名 关键词优化", limit: 1 })[0].id, "rednote_search_keyword_boost_v1");
+  assert.equal(recommendRednoteSkills({ query: "达人 KOC 合作 brief", limit: 1 })[0].id, "rednote_koc_brief_v1");
+  assert.equal(recommendRednoteSkills({ query: "评论 私信 转化", limit: 1 })[0].id, "rednote_comment_dm_conversion_v1");
+  assert.equal(recommendRednoteSkills({ stage: "复盘优化", query: "投后 数据", limit: 1 })[0].id, "rednote_performance_review_v1");
+});
+
+test("new rednote system skills run through workflow contracts", () => {
+  for (const id of rednoteSystemSkillIds) {
+    const skill = findSkill(id);
+    const task = runCreativeWorkflow({
+      brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书", targetAudience: "25-35 岁都市女性" }),
+      skillId: id,
+      brandKit: defaultBrandKit
+    });
+    assert.equal(task.skillId, id);
+    assert.equal(task.status, "completed");
+    assert.equal(task.agents.length, skill.agents.length);
+    assert.equal(task.exports.length, 3);
+    if (skill.agents.includes("video")) {
+      assert.ok(task.exports[0].fileNames.includes("video.mp4"), `${id} should export video`);
+      assert.ok(task.credits.video > 0, `${id} should bill video credits`);
+    } else {
+      assert.ok(!task.exports[0].fileNames.includes("video.mp4"), `${id} should stay image/text first`);
+      assert.equal(task.credits.video, 0);
+    }
+  }
+});
 test("skillsInGroup(featured) returns only featured skills", () => {
   const featured = skillsInGroup("featured");
   assert.ok(featured.length > 0);
