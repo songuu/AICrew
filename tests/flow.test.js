@@ -17,11 +17,11 @@ import {
   sanitizeFlow,
   hasAgent,
   hasBranching
-} from "../src/flow/model.js";
-import { routeIdeaToFlow } from "../src/flow/router.js";
-import { parseDirectorCommand, matchAgentInText } from "../src/flow/director.js";
-import { runFlow } from "../src/flow/execute.js";
-import { runCreativeWorkflow, runCreativeWorkflowWithSkill, findSkill } from "../src/domain.js";
+} from "../lib/flow/model.js";
+import { routeIdeaToFlow } from "../lib/flow/router.js";
+import { parseDirectorCommand, matchAgentInText } from "../lib/flow/director.js";
+import { runFlow } from "../lib/flow/execute.js";
+import { runCreativeWorkflow, runCreativeWorkflowWithSkill, findSkill } from "../lib/domain.js";
 
 // —— 模型：构造与不可变 ——
 

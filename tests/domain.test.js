@@ -14,7 +14,7 @@ import {
   retryAgentStep,
   runCreativeWorkflow,
   saveSkillFromProject
-} from "../src/domain.js";
+} from "../lib/domain.js";
 
 test("normalizes incomplete brief with PRD defaults", () => {
   const brief = normalizeBrief({ productName: "Pocket Camera" });

@@ -9,7 +9,7 @@
 // 三者最终都把一个合法 Flow 交给 onRun(brief, flow, meta) 执行，产出契约完全一致。
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { agents, parseBriefText, findPlatformPreset } from "./domain.js";
+import { agents, parseBriefText, findPlatformPreset } from "../lib/domain.js";
 import {
   createFlow,
   toggleAgent,
@@ -19,9 +19,9 @@ import {
   estimateFlowCredits,
   isVideoFlow,
   hasAgent
-} from "./flow/model.js";
-import { routeIdeaToFlow } from "./flow/router.js";
-import { parseDirectorCommand } from "./flow/director.js";
+} from "../lib/flow/model.js";
+import { routeIdeaToFlow } from "../lib/flow/router.js";
+import { parseDirectorCommand } from "../lib/flow/director.js";
 
 const AGENT_BY_ID = new Map(agents.map(agent => [agent.id, agent]));
 

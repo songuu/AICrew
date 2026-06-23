@@ -1,9 +1,25 @@
-import { connectionFor, createSystemAiRuntime, resolveSystemModel } from "../../../../src/ai/server-config.js";
-import { generateText, generateImage, generateVideo } from "../../../../src/ai/providers.js";
+import { connectionFor, createSystemAiRuntime, resolveSystemModel } from "../../../../lib/ai/server-config.js";
+import { generateText, generateImage, generateVideo } from "../../../../lib/ai/providers.js";
+
+type RouteConnection = Record<string, unknown>;
+type RouteSignal = AbortSignal | null | undefined;
+
+const generateTextForRoute = generateText as unknown as (
+  connection: RouteConnection,
+  options: { system?: string; prompt: string; maxTokens?: number; signal?: RouteSignal }
+) => Promise<string>;
+const generateImageForRoute = generateImage as unknown as (
+  connection: RouteConnection,
+  options: { prompt: string; size?: string; signal?: RouteSignal }
+) => Promise<string>;
+const generateVideoForRoute = generateVideo as unknown as (
+  connection: RouteConnection,
+  options: { prompt: string; imageUrl?: string; signal?: RouteSignal }
+) => Promise<Record<string, unknown>>;
 
 export const dynamic = "force-dynamic";
 
-function json(data, status = 200) {
+function json(data: unknown, status = 200) {
   return Response.json(data, {
     status,
     headers: { "cache-control": "no-store" }
@@ -14,7 +30,7 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export async function POST(request) {
+export async function POST(request: Request) {
   const runtime = createSystemAiRuntime();
   if (!runtime.configured) {
     return json({ error: `系统 AI 未配置：${runtime.missing.join("、")}` }, 503);
@@ -33,7 +49,7 @@ export async function POST(request) {
     const connection = connectionFor(runtime, route);
 
     if (mode === "text") {
-      const text = await generateText(connection, {
+      const text = await generateTextForRoute(connection, {
         system: body?.system || "",
         prompt: body?.prompt || "",
         maxTokens: body?.maxTokens || 1024,
@@ -43,7 +59,7 @@ export async function POST(request) {
     }
 
     if (mode === "image") {
-      const imageUrl = await generateImage(connection, {
+      const imageUrl = await generateImageForRoute(connection, {
         prompt: body?.prompt || "",
         size: route.size || body?.size || "1024x1024",
         signal: request.signal
@@ -52,7 +68,7 @@ export async function POST(request) {
     }
 
     if (mode === "video") {
-      const video = await generateVideo(connection, {
+      const video = await generateVideoForRoute(connection, {
         prompt: body?.prompt || "",
         imageUrl: body?.imageUrl || "",
         signal: request.signal

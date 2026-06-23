@@ -16,7 +16,7 @@ import {
   runCreativeWorkflow,
   saveSkillFromProject,
   skills
-} from "./domain.js";
+} from "../lib/domain.js";
 import {
   AI_MODE_LABELS,
   describeSelectedModel,
@@ -25,9 +25,9 @@ import {
   loadAiSelection,
   normalizeSystemAiConfig,
   saveAiSelection
-} from "./ai/config.js";
-import { runCreativeWorkflowWithAI } from "./ai/workflow.js";
-import { runFlow, runFlowWithAI } from "./flow/execute.js";
+} from "../lib/ai/config.js";
+import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
+import { runFlow, runFlowWithAI } from "../lib/flow/execute.js";
 import { CanvasStudio } from "./canvas/CanvasStudio.jsx";
 import { OrchestratorConsole } from "./OrchestratorConsole.jsx";
 

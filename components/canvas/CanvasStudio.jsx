@@ -21,7 +21,7 @@ import {
   HANDLE_ORDER,
   HANDLE_SIGN,
   sanitizeObjects
-} from "./model.js";
+} from "../../lib/canvas/model.js";
 import {
   createViewport,
   screenToWorld,
@@ -32,9 +32,9 @@ import {
   clampZoom,
   MIN_ZOOM,
   MAX_ZOOM
-} from "./viewport.js";
-import { createHistory, commit, undo, redo, canUndo, canRedo } from "./history.js";
-import { TOOL, isDrawTool, ADD_MENU, TOOL_SHORTCUTS } from "./tools.js";
+} from "../../lib/canvas/viewport.js";
+import { createHistory, commit, undo, redo, canUndo, canRedo } from "../../lib/canvas/history.js";
+import { TOOL, isDrawTool, ADD_MENU, TOOL_SHORTCUTS } from "../../lib/canvas/tools.js";
 
 const CANVAS_STORAGE_KEY = "aicrew-canvas-v1";
 

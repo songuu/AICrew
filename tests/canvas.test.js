@@ -25,7 +25,7 @@ import {
   isValidShape,
   sanitizeObjects,
   SHAPE_TYPES
-} from "../src/canvas/model.js";
+} from "../lib/canvas/model.js";
 
 import {
   createViewport,
@@ -38,7 +38,7 @@ import {
   fitToView,
   MIN_ZOOM,
   MAX_ZOOM
-} from "../src/canvas/viewport.js";
+} from "../lib/canvas/viewport.js";
 
 import {
   createHistory,
@@ -47,9 +47,9 @@ import {
   redo,
   canUndo,
   canRedo
-} from "../src/canvas/history.js";
+} from "../lib/canvas/history.js";
 
-import { TOOL, DRAW_TOOLS, isDrawTool, ADD_MENU } from "../src/canvas/tools.js";
+import { TOOL, DRAW_TOOLS, isDrawTool, ADD_MENU } from "../lib/canvas/tools.js";
 
 // ---------- model ----------
 

@@ -1,4 +1,4 @@
-import { AICrewStudio } from "../../src/AICrewStudio.jsx";
+import { AICrewStudio } from "../../components/AICrewStudio";
 
 export default function Page() {
   return <AICrewStudio initialView="signup" />;

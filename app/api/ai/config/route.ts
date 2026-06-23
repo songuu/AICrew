@@ -1,4 +1,4 @@
-import { createSystemAiRuntime, publicSystemAiConfig } from "../../../../src/ai/server-config.js";
+import { createSystemAiRuntime, publicSystemAiConfig } from "../../../../lib/ai/server-config.js";
 
 export const dynamic = "force-dynamic";
 

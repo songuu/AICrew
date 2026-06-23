@@ -8,16 +8,16 @@ import {
   saveAiSelection,
   selectedModelFor,
   AI_SELECTION_STORAGE_KEY
-} from "../src/ai/config.js";
+} from "../lib/ai/config.js";
 import {
   connectionFor,
   createSystemAiRuntime,
   publicSystemAiConfig,
   resolveSystemModel
-} from "../src/ai/server-config.js";
-import { generateText, generateImage, generateVideo, testConnection } from "../src/ai/providers.js";
-import { runCreativeWorkflowWithAI } from "../src/ai/workflow.js";
-import { runCreativeWorkflow, defaultBrandKit, normalizeBrief } from "../src/domain.js";
+} from "../lib/ai/server-config.js";
+import { generateText, generateImage, generateVideo, testConnection } from "../lib/ai/providers.js";
+import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
+import { runCreativeWorkflow, defaultBrandKit, normalizeBrief } from "../lib/domain.js";
 
 function memStorage() {
   const map = new Map();
