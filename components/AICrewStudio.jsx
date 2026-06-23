@@ -508,7 +508,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
           {view === "onboarding" && <Onboarding state={state} updateProfile={updateProfile} />}
         </section>
       </main>
-      <FloatingCommandLayer state={state} view={view} navigate={navigate} generating={generating} />
+      <FloatingCommandLayer state={state} view={view} navigate={navigate} />
     </div>
   );
 }
@@ -612,7 +612,7 @@ function Topbar({ state, view, navigate, resetDemo }) {
   );
 }
 
-function FloatingCommandLayer({ state, view, navigate, generating }) {
+function FloatingCommandLayer({ state, view, navigate }) {
   const latestTask = state.tasks?.[0];
   const agentsOnline = latestTask?.agents?.length || 0;
   // 画布视图自带真实工具坞，隐藏全局装饰 dock 避免双坞重叠。
@@ -633,29 +633,8 @@ function FloatingCommandLayer({ state, view, navigate, generating }) {
           <em>技能</em>
         </button>
       </div>
-      <div className="bottom-tool-dock" aria-label="Canvas tools">
-        <button type="button" className={view === "canvas" ? "active" : ""} onClick={() => navigate("canvas")} title="打开无限画布">
-          <span>⌖</span>
-          <em>选择</em>
-        </button>
-        <button type="button" onClick={() => navigate("canvas")} title="打开无限画布">
-          <span>✋</span>
-          <em>{generating ? "调度中" : "抓手"}</em>
-        </button>
-        <button type="button" onClick={() => navigate("canvas")} title="打开无限画布">
-          <span>▣</span>
-          <em>添加</em>
-        </button>
-        <i />
-        <button type="button" disabled title="Undo">
-          <span>↶</span>
-          <em>撤销</em>
-        </button>
-        <button type="button" disabled title="Redo">
-          <span>↷</span>
-          <em>重做</em>
-        </button>
-      </div>
+      {/* 底部操作栏（选择/抓手/添加/撤销/重做）已迁移为手动模式画布专属操作坞（oc-canvas-dock），
+          满足「只在手动模式显示」要求；此处全局装饰版移除，避免双坞与跨模式显示。*/}
       <div className="zoom-dock" aria-label="Canvas status">
         <span>{agentsOnline} agents</span>
         <strong>{state.workspace.credits.toLocaleString()}</strong>
@@ -755,14 +734,23 @@ function Workbench({
   aiConfig,
   onRetryAgent
 }) {
+  // orchestrator mode 上提到 Workbench：手动模式要让画布占右侧主栏、隐藏 OUTPUT/Runtime，
+  // 这些决策在 OrchestratorConsole 之外，故 mode 必须由外层持有并按其重排布局。
+  const [orchMode, setOrchMode] = useState("auto");
+  const isManual = orchMode === "manual";
   return (
-    <div className="workbench-layout">
+    <div className={`workbench-layout ${isManual ? "is-manual" : ""}`}>
       <OrchestratorConsole
+        mode={orchMode}
+        onModeChange={setOrchMode}
         onRun={onRunFlow}
         generating={generating}
         aiReady={isAiConfigured(aiConfig)}
         task={task}
       />
+      {/* 手动模式：流程画布接管右侧主区，OUTPUT 预览 + Runtime 面板隐藏（见 sprint 决策）*/}
+      {!isManual && (
+        <>
       <section className="workspace-canvas">
         <div className="canvas-toolbar">
           <div>
@@ -813,6 +801,8 @@ function Workbench({
         <AgentTimeline task={task} onRetry={onRetryAgent} />
         <QaBox task={task} />
       </section>
+        </>
+      )}
     </div>
   );
 }

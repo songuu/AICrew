@@ -1179,6 +1179,13 @@ button {
   grid-area: run;
 }
 
+/* 手动模式：流程画布接管右侧主区，oc-panel 跨满整行；
+   OUTPUT 预览 + Runtime 面板已在 Workbench JSX 中条件不渲染。 */
+.workbench-layout.is-manual {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "compose";
+}
+
 .brief-form {
   display: grid;
   gap: 14px;
@@ -4301,14 +4308,107 @@ body::after {
   letter-spacing: -2px;
 }
 
-/* —— 手动：导演台画布 —— */
-.oc-director {
-  gap: 10px;
+/* —— 手动 / 导演台：左控件 + 右画布主区双列 —— */
+/* 手动模式下 oc-panel 跨满 Workbench 整行（见 .workbench-layout.is-manual），
+   内部再分左右双列：左侧控件窄列、右侧流程画布主区。
+   保持基类 overflow:hidden（裁掉星核 ::after 辉光），双列网格在面板内不溢出。 */
+.oc-manual-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.4fr);
+  gap: 16px;
+  align-items: stretch;
+  min-height: 640px;
 }
 
+.oc-manual-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* 右侧画布主区：纵向排布，画布 flex 撑满，底部操作坞贴底。 */
+.oc-manual-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* 手动主区里的对话记录可随侧栏增高，不再写死小高度。 */
+.oc-manual-side .oc-chat-log {
+  flex: 1;
+  max-height: none;
+  min-height: 120px;
+}
+
+/* —— 手动画布底部操作坞（选择/抓手/添加/撤销/重做）：仅手动模式出现 —— */
+.oc-canvas-dock {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--glass-strong);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.34);
+}
+
+.oc-dock-btn {
+  display: grid;
+  place-items: center;
+  gap: 6px;
+  min-width: 62px;
+  min-height: 56px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-3);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.2s var(--ease), background 0.2s var(--ease), transform 0.2s var(--ease);
+}
+
+.oc-dock-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: var(--line-strong);
+  background: var(--glass);
+}
+
+.oc-dock-btn.active {
+  border-color: rgba(180, 140, 255, 0.5);
+  background: rgba(124, 69, 255, 0.24);
+  box-shadow: var(--glow-violet);
+}
+
+.oc-dock-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.oc-dock-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.oc-dock-btn em {
+  color: var(--muted);
+  font-style: normal;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.oc-dock-sep {
+  width: 1px;
+  margin: 8px 4px;
+  background: var(--line);
+}
+
+/* 手动主区画布：viewport 撑满 stage 余高（flex:1）、内容滚动；不再写死 280px。 */
 .oc-canvas {
   position: relative;
-  max-height: 280px;
+  flex: 1;
+  min-height: 420px;
   overflow: auto;
   border-radius: var(--radius-sm);
   border: 1px solid var(--line);
@@ -4317,6 +4417,13 @@ body::after {
     linear-gradient(var(--line-soft) 1px, transparent 1px) 0 0 / 100% 28px,
     linear-gradient(90deg, var(--line-soft) 1px, transparent 1px) 0 0 / 28px 100%,
     var(--bg-2);
+}
+
+/* inner：按节点坐标定尺寸的坐标系，至少撑满 viewport，超出则滚动。 */
+.oc-canvas-inner {
+  position: relative;
+  min-width: 100%;
+  min-height: 100%;
 }
 
 .oc-canvas-edges {
@@ -4489,7 +4596,15 @@ body::after {
     max-width: 260px;
   }
   .oc-canvas {
-    max-height: 220px;
+    min-height: 320px;
+  }
+}
+
+/* 窄屏：手动双列堆叠为单列（控件在上、画布在下），画布仍保持可用高度。 */
+@media (max-width: 1100px) {
+  .oc-manual-grid {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
   }
 }
 

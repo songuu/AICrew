@@ -72,54 +72,74 @@ function FlowCanvas({ flow }) {
   const width = Math.max(360, ...flow.nodes.map(node => node.x + NODE_W + 60));
   const height = Math.max(220, ...flow.nodes.map(node => node.y + NODE_H + 60));
   return (
-    <div className="oc-canvas" style={{ width, height }}>
-      <svg className="oc-canvas-edges" width={width} height={height} aria-hidden>
-        <defs>
-          <marker id="oc-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
-            <path d="M0,0 L8,3 L0,6 Z" fill="rgba(139,211,255,0.8)" />
-          </marker>
-        </defs>
-        {flow.edges.map(edge => {
-          const from = byId.get(edge.from);
-          const to = byId.get(edge.to);
-          if (!from || !to) return null;
-          const x1 = from.x + NODE_W;
-          const y1 = from.y + NODE_H / 2;
-          const x2 = to.x;
-          const y2 = to.y + NODE_H / 2;
-          const mid = (x1 + x2) / 2;
+    // viewport（填满手动主区、滚动）+ inner（按节点坐标定尺寸的坐标系）分层，
+    // 让画布既能撑满大区域，又保留节点的绝对定位空间；空态居中于 viewport 而非 inner。
+    <div className="oc-canvas">
+      <div className="oc-canvas-inner" style={{ width, height }}>
+        <svg className="oc-canvas-edges" width={width} height={height} aria-hidden>
+          <defs>
+            <marker id="oc-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+              <path d="M0,0 L8,3 L0,6 Z" fill="rgba(139,211,255,0.8)" />
+            </marker>
+          </defs>
+          {flow.edges.map(edge => {
+            const from = byId.get(edge.from);
+            const to = byId.get(edge.to);
+            if (!from || !to) return null;
+            const x1 = from.x + NODE_W;
+            const y1 = from.y + NODE_H / 2;
+            const x2 = to.x;
+            const y2 = to.y + NODE_H / 2;
+            const mid = (x1 + x2) / 2;
+            return (
+              <path
+                key={edge.id}
+                className="oc-edge"
+                d={`M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`}
+                markerEnd="url(#oc-arrow)"
+              />
+            );
+          })}
+        </svg>
+        {flow.nodes.map(node => {
+          const agent = AGENT_BY_ID.get(node.agentId);
           return (
-            <path
-              key={edge.id}
-              className="oc-edge"
-              d={`M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`}
-              markerEnd="url(#oc-arrow)"
-            />
+            <div
+              key={node.id}
+              className="oc-canvas-node"
+              style={{ left: node.x, top: node.y, width: NODE_W, height: NODE_H, "--accent": agent?.accent || "#8bd3ff" }}
+              title={agent?.responsibility}
+            >
+              <span className="oc-canvas-node-title">{agent?.title}</span>
+              <span className="oc-canvas-node-id">{agent?.id}</span>
+            </div>
           );
         })}
-      </svg>
-      {flow.nodes.map(node => {
-        const agent = AGENT_BY_ID.get(node.agentId);
-        return (
-          <div
-            key={node.id}
-            className="oc-canvas-node"
-            style={{ left: node.x, top: node.y, width: NODE_W, height: NODE_H, "--accent": agent?.accent || "#8bd3ff" }}
-            title={agent?.responsibility}
-          >
-            <span className="oc-canvas-node-title">{agent?.title}</span>
-            <span className="oc-canvas-node-id">{agent?.id}</span>
-          </div>
-        );
-      })}
+      </div>
       {!flow.nodes.length && <div className="oc-canvas-empty">画布空白 · 对话添加第一个节点</div>}
     </div>
   );
 }
 
-export function OrchestratorConsole({ onRun, generating, aiReady, task }) {
-  const [mode, setMode] = useState("auto");
+// 手动画布底部操作坞按钮（仅手动模式出现，本轮功能轻量、视觉就位）。
+function OcDockButton({ active, disabled, label, icon, onClick }) {
+  return (
+    <button
+      type="button"
+      className={`oc-dock-btn ${active ? "active" : ""}`}
+      disabled={disabled}
+      onClick={onClick}
+      title={label}
+    >
+      <span className="oc-dock-icon">{icon}</span>
+      <em>{label}</em>
+    </button>
+  );
+}
+
+export function OrchestratorConsole({ onRun, generating, aiReady, task, mode, onModeChange }) {
   const [idea, setIdea] = useState("给露营灯做一组小红书种草笔记");
+  const [tool, setTool] = useState("select"); // 手动画布操作坞的本地视觉态（选择/抓手），本轮不驱动真实手势
   const [flow, setFlow] = useState(() => createFlow("auto"));
   const [route, setRoute] = useState(null); // {rationale, matchedSkill, summary, brief}
   const [revealCount, setRevealCount] = useState(0); // 自动模式逐节点点亮
@@ -134,12 +154,19 @@ export function OrchestratorConsole({ onRun, generating, aiReady, task }) {
   const orderedIds = orderedAgentIds(flow);
 
   // 切换模式重置编排上下文，避免线性链与 DAG 互相污染。
+  // mode 受控于 Workbench（上提以便外层按模式重排布局），此处只回调 + 重置本组件内部态。
   function switchMode(nextMode) {
-    setMode(nextMode);
+    onModeChange(nextMode);
     setFlow(createFlow(nextMode));
     setRoute(null);
     setPhase("idle");
     setRevealCount(0);
+    setTool("select");
+  }
+
+  // 操作坞「添加」：手动模式经对话增删节点，故按钮聚焦对话框引导（本轮轻量功能）。
+  function focusChat() {
+    chatInputRef.current?.focus();
   }
 
   // 中枢路由：auto/semi 共用。auto 走点亮动画后自动运行；semi 停在可编辑态。
@@ -205,10 +232,9 @@ export function OrchestratorConsole({ onRun, generating, aiReady, task }) {
   const activeMode = MODES.find(m => m.id === mode);
   const busy = generating || phase === "thinking";
 
-  return (
-    <section className="panel oc-panel">
-      {/* —— Hero 模式选择器：核心控件「一个 Flow，三种创作方式」 —— */}
-      <div className="oc-mode-block">
+  // —— 三模式共享片段（提取以便手动模式走双列布局而不重复 JSX）——
+  const modeBlock = (
+    <div className="oc-mode-block">
         <div className="oc-head">
           <div>
             <p className="eyebrow">Orchestrator</p>
@@ -260,10 +286,13 @@ export function OrchestratorConsole({ onRun, generating, aiReady, task }) {
           <span className="oc-mode-rail-thumb" />
         </div>
 
-        <p className="oc-mode-tip">{activeMode.tip}</p>
-      </div>
+      <p className="oc-mode-tip">{activeMode.tip}</p>
+    </div>
+  );
 
-      {/* 创意输入：三模式共用（手动模式作为流程的创意基底，具体编排靠对话）*/}
+  // 创意输入：三模式共用（手动模式作为流程的创意基底，具体编排靠对话）
+  const ideaField = (
+    <>
       <textarea
         className="oc-idea"
         rows={mode === "manual" ? 2 : 3}
@@ -273,6 +302,63 @@ export function OrchestratorConsole({ onRun, generating, aiReady, task }) {
         onChange={event => setIdea(event.target.value)}
       />
       {mode === "manual" && <p className="oc-hint">创意作为基底，下面用对话绘制流程节点 ↓</p>}
+    </>
+  );
+
+  const aiHint = (
+    <p className="oc-ai-hint">
+      {aiReady ? "系统 AI 已接入 · 真实生成" : "未配置系统 AI · 运行确定性模拟"}
+    </p>
+  );
+
+  // —— 手动 / 导演台：左侧控件 + 右侧流程画布主区（占满 Workbench 整行）——
+  if (mode === "manual") {
+    return (
+      <section className="panel oc-panel oc-panel-manual">
+        <div className="oc-manual-grid">
+          <div className="oc-manual-side">
+            {modeBlock}
+            {ideaField}
+            <div className="oc-chat-log">
+              {log.map((entry, index) => (
+                <div key={index} className={`oc-msg oc-msg-${entry.role}`}>
+                  {entry.text}
+                </div>
+              ))}
+            </div>
+            <form className="oc-chat-form" onSubmit={sendCommand}>
+              <input ref={chatInputRef} className="oc-chat-input" placeholder="加视觉 / 视觉连文案 / 删质检 / 运行" />
+              <button type="submit" className="oc-send">↑</button>
+            </form>
+            <button type="button" className="oc-primary" disabled={busy || !validity.valid} onClick={() => triggerRun()}>
+              {generating ? "执行中…" : `✦ 运行 Director · ${orderedIds.length} 个节点`}
+            </button>
+            {aiHint}
+          </div>
+
+          <div className="oc-manual-stage">
+            <FlowCanvas flow={flow} />
+            {isVideoFlow(flow) ? null : <p className="oc-future">🎬 视频节点 · 未来支持</p>}
+            {/* 手动专属底部操作坞：仅手动模式出现，作为画布操作栏归位（本轮功能轻量）*/}
+            <div className="oc-canvas-dock" role="toolbar" aria-label="画布操作">
+              <OcDockButton active={tool === "select"} label="选择" icon="⌖" onClick={() => setTool("select")} />
+              <OcDockButton active={tool === "hand"} label="抓手" icon="✋" onClick={() => setTool("hand")} />
+              <OcDockButton label="添加" icon="＋" onClick={focusChat} />
+              <i className="oc-dock-sep" />
+              <OcDockButton label="撤销" icon="↶" disabled />
+              <OcDockButton label="重做" icon="↷" disabled />
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  // —— 自动 / 半自动：维持现扁平三栏布局，零改动 ——
+  return (
+    <section className="panel oc-panel">
+      {modeBlock}
+      {ideaField}
 
       {/* —— 自动 —— */}
       {mode === "auto" && (
@@ -356,31 +442,7 @@ export function OrchestratorConsole({ onRun, generating, aiReady, task }) {
         </div>
       )}
 
-      {/* —— 手动 / 导演台 —— */}
-      {mode === "manual" && (
-        <div className="oc-body oc-director">
-          <FlowCanvas flow={flow} />
-          {isVideoFlow(flow) ? null : <p className="oc-future">🎬 视频节点 · 未来支持</p>}
-          <div className="oc-chat-log">
-            {log.map((entry, index) => (
-              <div key={index} className={`oc-msg oc-msg-${entry.role}`}>
-                {entry.text}
-              </div>
-            ))}
-          </div>
-          <form className="oc-chat-form" onSubmit={sendCommand}>
-            <input ref={chatInputRef} className="oc-chat-input" placeholder="加视觉 / 视觉连文案 / 删质检 / 运行" />
-            <button type="submit" className="oc-send">↑</button>
-          </form>
-          <button type="button" className="oc-primary" disabled={busy || !validity.valid} onClick={() => triggerRun()}>
-            {generating ? "执行中…" : `✦ 运行 Director · ${orderedIds.length} 个节点`}
-          </button>
-        </div>
-      )}
-
-      <p className="oc-ai-hint">
-        {aiReady ? "系统 AI 已接入 · 真实生成" : "未配置系统 AI · 运行确定性模拟"}
-      </p>
+      {aiHint}
     </section>
   );
 }
