@@ -14,14 +14,29 @@ import {
   isVideoFlow,
   estimateFlowCredits,
   flowToSkill,
+  skillToFlow,
   sanitizeFlow,
   hasAgent,
   hasBranching
 } from "../lib/flow/model.js";
 import { routeIdeaToFlow } from "../lib/flow/router.js";
 import { parseDirectorCommand, matchAgentInText } from "../lib/flow/director.js";
-import { runFlow } from "../lib/flow/execute.js";
+import { runFlow, runFlowWithAI, flowToAiModes } from "../lib/flow/execute.js";
 import { runCreativeWorkflow, runCreativeWorkflowWithSkill, findSkill } from "../lib/domain.js";
+
+function makeAiFetch() {
+  const calls = [];
+  let imageCalls = 0;
+  const fetchImpl = async (url, options) => {
+    calls.push(String(url));
+    const isImage = String(url).includes("/images/");
+    const body = isImage
+      ? { data: [{ b64_json: `IMG${(imageCalls += 1)}` }] }
+      : { choices: [{ message: { content: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) } }] };
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+  };
+  return { fetchImpl, calls };
+}
 
 // —— 模型：构造与不可变 ——
 
@@ -39,6 +54,21 @@ test("linearFlow wires nodes into a single chain", () => {
 test("linearFlow drops unknown agent ids", () => {
   const flow = linearFlow(["brief", "ghost", "qa"]);
   assert.deepEqual(orderedAgentIds(flow), ["brief", "qa"]);
+});
+
+test("skillToFlow seeds a legal flow from a skill's agent sequence", () => {
+  const skill = findSkill("rednote_seeding_note_v1");
+  const flow = skillToFlow("rednote_seeding_note_v1", "manual");
+  assert.equal(flow.mode, "manual");
+  assert.deepEqual(orderedAgentIds(flow), skill.agents);
+  // skill→flow→skill 往返：物化回 skill 形状时 agents 同源（守单桥等价）
+  assert.deepEqual(flowToSkill(flow).agents, skill.agents);
+});
+
+test("skillToFlow falls back to first skill for unknown id and stays non-empty", () => {
+  const flow = skillToFlow("does_not_exist", "auto");
+  assert.ok(flow.nodes.length > 0);
+  assert.deepEqual(orderedAgentIds(flow), findSkill("does_not_exist").agents);
 });
 
 test("addNode is immutable", () => {
@@ -194,6 +224,56 @@ test("runFlow produces the same task contract as a preset skill", () => {
   assert.equal(viaFlow.variants.length, viaSkill.variants.length);
   assert.equal(viaFlow.exports.length, viaSkill.exports.length);
   assert.ok(viaFlow.qa.overallScore > 0);
+});
+
+test("flowToAiModes maps copy node to text and visual node to image", () => {
+  assert.deepEqual(flowToAiModes(linearFlow(["copy", "visual"], "semi")), { text: true, image: true });
+  assert.deepEqual(flowToAiModes(linearFlow(["copy", "qa"], "semi")), { text: true, image: false });
+  assert.deepEqual(flowToAiModes(linearFlow(["visual", "qa"], "semi")), { text: false, image: true });
+});
+
+test("runFlowWithAI gates image generation on the presence of a visual node", async () => {
+  const aiConfig = {
+    provider: "openai-compatible",
+    apiKey: "k",
+    model: "gpt",
+    baseURL: "https://ai.example.com",
+    imageModel: "img"
+  };
+
+  const withVisual = makeAiFetch();
+  const a = await runFlowWithAI({
+    brief: { productName: "Lamp", platform: "抖音" },
+    flow: linearFlow(["strategy", "copy", "visual", "qa"], "semi"),
+    aiConfig,
+    fetchImpl: withVisual.fetchImpl
+  });
+  assert.equal(a.aiMeta.imageAppliedCount, a.variants.length);
+  assert.ok(withVisual.calls.some(url => url.includes("/images/")));
+
+  const noVisual = makeAiFetch();
+  const b = await runFlowWithAI({
+    brief: { productName: "Lamp", platform: "抖音" },
+    flow: linearFlow(["strategy", "copy", "qa"], "semi"),
+    aiConfig,
+    fetchImpl: noVisual.fetchImpl
+  });
+  assert.equal(b.aiMeta.imageAppliedCount, 0);
+  assert.equal(b.aiMeta.copyApplied, b.variants.length);
+  assert.ok(!noVisual.calls.some(url => url.includes("/images/")));
+});
+
+test("qa and export nodes gate compliance and packaging in the flow", () => {
+  const brief = { productName: "露营灯", platform: "小红书", sellingPoints: "柔光便携" };
+
+  const full = runFlow({ brief, flow: linearFlow(["strategy", "copy", "qa", "export"], "manual") });
+  assert.ok(!full.qa.skipped);
+  assert.ok(full.exports.length > 0);
+
+  const bare = runFlow({ brief, flow: linearFlow(["strategy", "copy", "visual"], "manual") });
+  assert.equal(bare.qa.skipped, true);
+  assert.equal(bare.qa.checks.length, 0);
+  assert.equal(bare.exports.length, 0);
 });
 
 test("runFlow refuses an empty flow", () => {

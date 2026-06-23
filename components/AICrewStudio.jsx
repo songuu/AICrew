@@ -28,6 +28,11 @@ import {
 } from "../lib/ai/config.js";
 import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
 import { runFlow, runFlowWithAI } from "../lib/flow/execute.js";
+import { stashVariantImages, rehydrateVariantImages } from "../lib/storage/imageStore.js";
+import { assembleExportBundle } from "../lib/export/bundle.js";
+import { loadBrandKit, saveBrandKit } from "../lib/brand/store.js";
+import { generateImage } from "../lib/ai/providers.js";
+import { renderBrandImageHint } from "../lib/brand/prompt.js";
 import { CanvasStudio } from "./canvas/CanvasStudio.jsx";
 import { OrchestratorConsole } from "./OrchestratorConsole.jsx";
 
@@ -94,6 +99,53 @@ function qualityTone(score) {
   return "warn";
 }
 
+// 兼容旧 localStorage 形状：新 export 是 {files: 对象数组, fileNames}，旧版可能是 files: string[]。
+function exportFileNames(item) {
+  if (Array.isArray(item.fileNames)) return item.fileNames;
+  return (item.files || []).map(file => (typeof file === "string" ? file : file.name));
+}
+
+function findVariantById(state, variantId) {
+  for (const list of [state?.tasks, state?.projects]) {
+    for (const item of list || []) {
+      const found = (item?.variants || []).find(variant => variant.id === variantId);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function triggerBrowserDownload(name, href, revoke = false) {
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = name;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  if (revoke) setTimeout(() => URL.revokeObjectURL(href), 0);
+}
+
+// 文本文件：内容已内联，直接 Blob 下载。
+function downloadTextFile(file) {
+  const url = URL.createObjectURL(new Blob([file.content], { type: file.mimeType || "text/plain" }));
+  triggerBrowserDownload(file.name, url, true);
+}
+
+// 图片：data URL 直接下载；https 先 fetch→blob，失败回退原始 URL（跨域/防盗链兜底）。
+async function downloadImageFile(file) {
+  if (file.dataUrl) {
+    triggerBrowserDownload(file.name, file.dataUrl);
+    return;
+  }
+  try {
+    const response = await fetch(file.url);
+    const url = URL.createObjectURL(await response.blob());
+    triggerBrowserDownload(file.name, url, true);
+  } catch {
+    triggerBrowserDownload(file.name, file.url);
+  }
+}
+
 function readState() {
   try {
     const saved = window.localStorage.getItem(storageKey);
@@ -104,7 +156,8 @@ function readState() {
 }
 
 // 持久化前剥离 variant.imageUrl：AI 封面（base64 data URL）可能很大且属生成态，
-// 不写入主 blob 可避免 localStorage 配额溢出与图像引用的留存。图仅存于当前会话内存。
+// 不写入主 blob 可避免 localStorage 配额溢出。剥离前会先 stash 到独立 imageStore（见保存副作用），
+// 因此封面跨会话不再丢失——读取时由 rehydrateVariantImages 回填。
 function stripVariantMedia(variant) {
   if (!variant || !variant.imageUrl) return variant;
   const { imageUrl, ...rest } = variant;
@@ -149,7 +202,8 @@ export function AICrewStudio({ initialView = "dashboard" }) {
 
   useEffect(() => {
     let alive = true;
-    const nextState = readState();
+    // 回填上次会话被剥离的封面 imageUrl（来自独立 imageStore），并从独立 key 恢复跨会话 Brand Memory。
+    const nextState = { ...rehydrateVariantImages(readState()), brandKit: loadBrandKit() };
     setState(nextState);
     setSelectedVariantId(nextState.tasks?.[0]?.variants?.[0]?.id || null);
     fetchSystemAiConfig().then(config => {
@@ -163,6 +217,8 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   useEffect(() => {
     if (!state) return;
     try {
+      // 先把封面 stash 到独立 imageStore，再把（已剥离 imageUrl 的）主 blob 落盘——两者分治避免配额溢出。
+      stashVariantImages(state);
       window.localStorage.setItem(storageKey, JSON.stringify(sanitizeStateForStorage(state)));
     } catch {
       // 配额超限/序列化失败时静默降级：内存态不受影响，仅本次不落盘。
@@ -241,10 +297,26 @@ export function AICrewStudio({ initialView = "dashboard" }) {
     }
   }
 
+  // 把本次 brief 携带的上传素材登记进素材库（按 name 去重），闭合「上传→刷新后素材库可见」链路。
+  // 素材的 dataURL 存在 asset.ref 上，避免后续静默丢失。
+  function ingestBriefMaterials(brief) {
+    const materials = Array.isArray(brief?.materials) ? brief.materials : [];
+    if (!materials.length) return;
+    setState(current => {
+      const existing = new Set(current.assets.map(asset => asset.name));
+      const fresh = materials
+        .filter(material => material.name && !existing.has(material.name))
+        .map(material => ({ ...createAsset("image", material.name, "upload", ["uploaded", "material"]), ref: material.ref }));
+      if (!fresh.length) return current;
+      return { ...current, assets: [...fresh, ...current.assets] };
+    });
+  }
+
   // Flow 编排执行：三模式控制台统一入口。与 runAndCommit 同样的 AI/模拟兜底与提交逻辑，
   // 区别仅在用 Flow 编排图（runFlow）而非预设 skillId 驱动管线。
   async function runFlowAndCommit(brief, flow, meta) {
     setGenerating(true);
+    ingestBriefMaterials(brief);
     try {
       const nextTask = isAiConfigured(aiConfig)
         ? await runFlowWithAI({ brief, flow, brandKit: state.brandKit, aiConfig, meta })
@@ -290,19 +362,16 @@ export function AICrewStudio({ initialView = "dashboard" }) {
     });
   }
 
-  function updateBrand(event) {
-    event.preventDefault();
-    const data = Object.fromEntries(new FormData(event.currentTarget).entries());
-    setState(current => ({
-      ...current,
-      brandKit: {
-        ...current.brandKit,
-        name: data.name,
-        slogan: data.slogan,
-        voice: data.voice,
-        forbiddenWords: data.forbiddenWords.split(",").map(item => item.trim()).filter(Boolean)
-      }
-    }));
+  // 写穿独立 brandStore（跨会话持久化）并同步内存态；brandKit 由 store 归一化后回填。
+  function saveBrand(nextBrandKit) {
+    const normalized = saveBrandKit(nextBrandKit);
+    setState(current => ({ ...current, brandKit: normalized }));
+  }
+
+  // 注入给画布的 AI 生成句柄：真调用 generateImage + 品牌审美提示。lib/canvas 不直接 import ai，保隔离。
+  async function generateCanvasImage(prompt) {
+    const hint = renderBrandImageHint(state.brandKit);
+    return generateImage(aiConfig, { prompt: hint ? `${prompt}。${hint}` : prompt });
   }
 
   function updateProfile(event) {
@@ -494,14 +563,19 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               onRetryAgent={retryAgent}
             />
           )}
-          {view === "canvas" && <CanvasStudio />}
+          {view === "canvas" && (
+            <CanvasStudio
+              onGenerateImage={isAiConfigured(aiConfig) ? generateCanvasImage : undefined}
+              covers={(task?.variants || []).filter(variant => variant.imageUrl).map(variant => ({ src: variant.imageUrl, name: variant.name }))}
+            />
+          )}
           {view === "settings" && (
             <AiSettings aiConfig={aiConfig} onSelectionChange={updateAiSelection} onRefresh={refreshAiConfig} agentCatalog={agentCatalog} />
           )}
           {view === "projects" && <Projects state={state} task={task} navigate={navigate} />}
           {view === "assets" && <Assets state={state} addAsset={addAsset} />}
           {view === "skills" && <Skills allSkills={allSkills} />}
-          {view === "brand" && <Brand state={state} updateBrand={updateBrand} />}
+          {view === "brand" && <Brand state={state} saveBrand={saveBrand} />}
           {view === "exports" && <Exports state={state} />}
           {view === "billing" && <Billing state={state} />}
           {view === "admin" && <Admin state={state} />}
@@ -762,6 +836,7 @@ function Workbench({
         onRun={handleRunFlow}
         generating={generating}
         aiReady={isAiConfigured(aiConfig)}
+        aiConfig={aiConfig}
         task={task}
       />
       {/* 手动模式：流程画布接管右侧主区；OUTPUT + Runtime 默认隐藏，运行后于画布下方整宽显现 */}
@@ -900,8 +975,49 @@ function Skills({ allSkills }) {
   );
 }
 
-function Brand({ state, updateBrand }) {
+function Brand({ state, saveBrand }) {
   const brand = state.brandKit;
+  // 受控表单：跨会话 Brand Memory，提交后写穿独立 store 并刷新预览。
+  const [form, setForm] = useState(() => ({
+    name: brand.name,
+    slogan: brand.slogan,
+    voice: brand.voice,
+    aesthetic: brand.aesthetic || "",
+    productLine: brand.productLine || "",
+    typography: brand.typography || "",
+    colors: (brand.colors || []).join(", "),
+    forbiddenWords: (brand.forbiddenWords || []).join(", ")
+  }));
+  const [saved, setSaved] = useState(false);
+
+  function field(key) {
+    return event => {
+      const { value } = event.target;
+      setForm(prev => ({ ...prev, [key]: value }));
+      setSaved(false);
+    };
+  }
+
+  function splitList(value) {
+    return value.split(",").map(item => item.trim()).filter(Boolean);
+  }
+
+  function submit(event) {
+    event.preventDefault();
+    saveBrand({
+      ...brand,
+      name: form.name,
+      slogan: form.slogan,
+      voice: form.voice,
+      aesthetic: form.aesthetic,
+      productLine: form.productLine,
+      typography: form.typography,
+      colors: splitList(form.colors),
+      forbiddenWords: splitList(form.forbiddenWords)
+    });
+    setSaved(true);
+  }
+
   return (
     <div className="page-grid two">
       <section className="panel">
@@ -910,23 +1026,40 @@ function Brand({ state, updateBrand }) {
             <p className="eyebrow">Brand Memory</p>
             <h3>{brand.name}</h3>
           </div>
+          {saved && <span className="status-chip">已保存 ✓</span>}
         </div>
-        <form className="brief-form" onSubmit={updateBrand}>
+        <form className="brief-form" onSubmit={submit}>
           <label>
             品牌名
-            <input name="name" defaultValue={brand.name} />
+            <input value={form.name} onChange={field("name")} />
           </label>
           <label>
             Slogan
-            <input name="slogan" defaultValue={brand.slogan} />
+            <input value={form.slogan} onChange={field("slogan")} />
           </label>
           <label>
             语气
-            <textarea name="voice" rows="3" defaultValue={brand.voice} />
+            <textarea rows="2" value={form.voice} onChange={field("voice")} />
           </label>
           <label>
-            禁用词
-            <input name="forbiddenWords" defaultValue={brand.forbiddenWords.join(", ")} />
+            审美偏好
+            <textarea rows="2" value={form.aesthetic} onChange={field("aesthetic")} placeholder="如：高级、留白、冷色调" />
+          </label>
+          <label>
+            产品线
+            <input value={form.productLine} onChange={field("productLine")} />
+          </label>
+          <label>
+            字体
+            <input value={form.typography} onChange={field("typography")} />
+          </label>
+          <label>
+            品牌色（逗号分隔）
+            <input value={form.colors} onChange={field("colors")} />
+          </label>
+          <label>
+            禁用词（逗号分隔）
+            <input value={form.forbiddenWords} onChange={field("forbiddenWords")} />
           </label>
           <button className="primary-button full" type="submit">
             Save Brand Kit
@@ -965,16 +1098,38 @@ function Exports({ state }) {
           </div>
         </div>
         <div className="export-grid">
-          {state.exports.map(item => (
-            <article className="export-card" key={item.id}>
-              <div className="export-icon">{item.fileNames.some(name => name.endsWith(".mp4")) ? "MP4" : "IMG"}</div>
-              <strong>{item.name}</strong>
-              <span>
-                {item.platform} · {item.fileNames.join(" / ")}
-              </span>
-              <small>{formatDate(item.createdAt)}</small>
-            </article>
-          ))}
+          {state.exports.map(item => {
+            const fileNames = exportFileNames(item);
+            const bundle = assembleExportBundle(item, findVariantById(state, item.variantId));
+            const declaresCover = (item.files || []).some(file => file && file.kind === "image");
+            return (
+              <article className="export-card" key={item.id}>
+                <div className="export-icon">{fileNames.some(name => name.endsWith(".mp4")) ? "MP4" : "IMG"}</div>
+                <strong>{item.name}</strong>
+                <span>
+                  {item.platform} · {fileNames.join(" / ")}
+                </span>
+                <div className="export-downloads">
+                  {bundle.textFiles.map(file => (
+                    <button key={file.name} type="button" className="ghost-btn" onClick={() => downloadTextFile(file)}>
+                      ⇩ {file.name}
+                    </button>
+                  ))}
+                  {bundle.imageFiles.map(file => (
+                    <button key={file.name} type="button" className="ghost-btn" onClick={() => downloadImageFile(file)}>
+                      ⇩ {file.name}
+                    </button>
+                  ))}
+                  {declaresCover && bundle.imageFiles.length === 0 && (
+                    <button type="button" className="ghost-btn" disabled title="重新生成以获取封面图">
+                      封面待生成
+                    </button>
+                  )}
+                </div>
+                <small>{formatDate(item.createdAt)}</small>
+              </article>
+            );
+          })}
         </div>
       </section>
     </div>

@@ -340,6 +340,58 @@ test("runCreativeWorkflowWithAI uses system text and image models through projec
   assert.ok(calls.some(call => call.body.mode === "image"));
 });
 
+test("runCreativeWorkflowWithAI injects uploaded material names into image prompts", async () => {
+  const imagePrompts = [];
+  const router = (url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.mode === "image") {
+      imagePrompts.push(body.prompt);
+      return jsonResponse({ imageUrl: "data:image/png;base64,IMG" });
+    }
+    return jsonResponse({ text: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) });
+  };
+  const { fetchImpl } = makeFetch(router);
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({
+      productName: "NovaGlow Lamp",
+      platform: "小红书",
+      materials: [{ name: "product-front.png", type: "image/png", ref: "data:image/png;base64,AAA" }]
+    }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+  assert.equal(result.aiMeta.imageApplied, true);
+  assert.ok(imagePrompts.length > 0, "expected image generation calls");
+  assert.ok(
+    imagePrompts.every(prompt => prompt.includes("product-front.png")),
+    "every image prompt should reference the uploaded material"
+  );
+});
+
+test("image prompts omit the material clause when no material is uploaded", async () => {
+  const imagePrompts = [];
+  const router = (url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.mode === "image") {
+      imagePrompts.push(body.prompt);
+      return jsonResponse({ imageUrl: "data:image/png;base64,IMG" });
+    }
+    return jsonResponse({ text: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) });
+  };
+  const { fetchImpl } = makeFetch(router);
+  await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "NovaGlow Lamp", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+  assert.ok(imagePrompts.length > 0);
+  assert.ok(imagePrompts.every(prompt => !prompt.includes("参考用户上传素材")));
+});
+
 test("connectionFor maps a resolved system route to a direct provider config", () => {
   const runtime = createSystemAiRuntime({
     AICREW_AI_PROVIDER: "openai-compatible",
@@ -355,4 +407,87 @@ test("connectionFor maps a resolved system route to a direct provider config", (
   assert.equal(connection.model, "Kwai-Kolors/Kolors");
   assert.equal(connection.apiKey, "k");
   assert.equal(connection.imageApi, "siliconflow");
+});
+
+// ---- multi-variant image generation (P1) ----
+function studioRouter({ failImageAt } = {}) {
+  let imageCall = 0;
+  return (url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.mode === "image") {
+      imageCall += 1;
+      if (failImageAt && imageCall === failImageAt) {
+        return jsonResponse({ error: { message: "img fail" } }, { ok: false, status: 500 });
+      }
+      return jsonResponse({ imageUrl: `data:image/png;base64,IMG${imageCall}` });
+    }
+    return jsonResponse({ text: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) });
+  };
+}
+
+test("runCreativeWorkflowWithAI generates a distinct image for every variant", async () => {
+  const { fetchImpl } = makeFetch(studioRouter());
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+
+  assert.equal(result.aiMeta.imageAppliedCount, 3);
+  assert.equal(result.aiMeta.imageApplied, true);
+  const urls = result.variants.map(variant => variant.imageUrl);
+  assert.ok(urls.every(Boolean));
+  assert.equal(new Set(urls).size, 3);
+});
+
+test("a single variant image failure is isolated and recorded in aiMeta", async () => {
+  const { fetchImpl } = makeFetch(studioRouter({ failImageAt: 2 }));
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+
+  assert.equal(result.aiMeta.imageAppliedCount, 2);
+  assert.equal(result.aiMeta.copyApplied, 3);
+  assert.equal(result.aiMeta.imageErrors.length, 1);
+  assert.equal(result.variants.filter(variant => variant.imageUrl).length, 2);
+});
+
+test("enabledModes.image=false skips image generation entirely", async () => {
+  const { fetchImpl, calls } = makeFetch(studioRouter());
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    enabledModes: { text: true, image: false },
+    fetchImpl
+  });
+
+  assert.equal(result.aiMeta.imageAppliedCount, 0);
+  assert.equal(result.aiMeta.imageApplied, false);
+  assert.equal(result.aiMeta.copyApplied, 3);
+  assert.ok(!calls.some(call => call.body.mode === "image"));
+});
+
+test("maxImagesPerRun caps how many variants get images while keeping copy", async () => {
+  const { fetchImpl } = makeFetch(studioRouter());
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: { ...systemConfig(), maxImagesPerRun: 2 },
+    fetchImpl
+  });
+
+  assert.equal(result.aiMeta.imageAppliedCount, 2);
+  assert.ok(result.variants[0].imageUrl);
+  assert.ok(result.variants[1].imageUrl);
+  assert.ok(!result.variants[2].imageUrl);
+  assert.ok(result.variants[2].caption);
 });

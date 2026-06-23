@@ -24,6 +24,8 @@ import {
   MIN_SIZE,
   isValidShape,
   sanitizeObjects,
+  placeGeneratedImage,
+  placeGeneratedImages,
   SHAPE_TYPES
 } from "../lib/canvas/model.js";
 
@@ -62,6 +64,34 @@ test("createShape 生成带 id/默认值的图元，未知类型抛错", () => {
   assert.equal(rect.hidden, false);
   assert.ok(rect.width > 0 && rect.height > 0, "应有默认尺寸");
   assert.throws(() => createShape("hexagon"), /未知图元类型/);
+});
+
+test("placeGeneratedImage 把 AI 图作为 image 图元置顶，且不可变", () => {
+  const scene = createScene();
+  const next = placeGeneratedImage(scene, {
+    src: "data:image/png;base64,A",
+    name: "封面",
+    box: { x: 10, y: 20, width: 200, height: 120 }
+  });
+  assert.equal(scene.objects.length, 0, "原场景不被改动");
+  const shape = next.objects.at(-1);
+  assert.equal(shape.type, "image");
+  assert.equal(shape.src, "data:image/png;base64,A");
+  assert.equal(shape.aiGenerated, true);
+  assert.equal(shape.x, 10);
+  assert.equal(shape.width, 200);
+});
+
+test("placeGeneratedImages 网格铺入，单次 commit 一步撤销整批", () => {
+  const scene = createScene();
+  const items = [{ src: "a", name: "1" }, { src: "b", name: "2" }, { src: "c", name: "3" }];
+  const next = placeGeneratedImages(scene, items, { columns: 2, cellWidth: 100, cellHeight: 100, gap: 10 });
+  assert.equal(next.objects.length, 3);
+  assert.ok(next.objects[2].y > next.objects[0].y, "第 3 张应换行到下一排");
+
+  const history = commit(createHistory(scene), next);
+  const back = undo(history);
+  assert.equal(back.present.objects.length, 0, "整批应一步撤销");
 });
 
 test("createShape 显式 id 不被覆盖，props 覆盖默认", () => {

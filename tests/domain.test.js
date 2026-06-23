@@ -2,11 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   agents,
+  buildExportFiles,
   calculateQualityScore,
   createInitialState,
   createProjectFromTask,
   defaultBrandKit,
   estimateCredits,
+  findSkill,
+  mergeCreativeParams,
   normalizeBrief,
   orchestratorAgent,
   parseBriefText,
@@ -22,6 +25,38 @@ test("normalizes incomplete brief with PRD defaults", () => {
   assert.equal(brief.productName, "Pocket Camera");
   assert.equal(brief.platform, "抖音");
   assert.match(brief.goal, /生成/);
+});
+
+test("normalizeBrief carries uploaded materials and defaults to empty array", () => {
+  assert.deepEqual(normalizeBrief({ productName: "Lamp" }).materials, []);
+  const withMaterials = normalizeBrief({
+    productName: "Lamp",
+    materials: [{ name: "front.png", type: "image/png", ref: "data:image/png;base64,AAA" }]
+  });
+  assert.equal(withMaterials.materials.length, 1);
+  assert.equal(withMaterials.materials[0].name, "front.png");
+});
+
+test("mergeCreativeParams overrides platform/audience/materials onto a brief", () => {
+  const base = normalizeBrief({ productName: "Lamp", platform: "抖音", targetAudience: "默认受众" });
+  const merged = mergeCreativeParams(base, {
+    platform: "小红书",
+    audience: "25-35 岁都市女性",
+    materials: [{ name: "ref.png", type: "image/png", ref: "data:image/png;base64,AAA" }]
+  });
+  assert.equal(merged.platform, "小红书");
+  assert.equal(merged.targetAudience, "25-35 岁都市女性");
+  assert.equal(merged.materials[0].name, "ref.png");
+  // 原 brief 不被修改（不可变）
+  assert.equal(base.platform, "抖音");
+  assert.equal(base.materials.length, 0);
+});
+
+test("mergeCreativeParams leaves untouched fields when params are empty", () => {
+  const base = normalizeBrief({ productName: "Lamp", platform: "小红书", targetAudience: "原受众" });
+  const merged = mergeCreativeParams(base, { audience: "   " });
+  assert.equal(merged.platform, "小红书");
+  assert.equal(merged.targetAudience, "原受众");
 });
 
 test("parses freeform brief into structured creative brief", () => {
@@ -131,9 +166,11 @@ test("image-first 小红书 note delivers image artifacts, not a video pack", ()
   });
 
   // 交付物不应包含视频文件，且应是图文笔记结构而非时间码分镜
-  const files = task.exports[0].files;
-  assert.ok(!files.includes("video.mp4"));
-  assert.ok(files.includes("note.md"));
+  const fileNames = task.exports[0].fileNames;
+  assert.ok(!fileNames.includes("video.mp4"));
+  assert.ok(fileNames.includes("note.md"));
+  // note.md 现内联真实 markdown 内容
+  assert.ok(task.exports[0].files.find(file => file.name === "note.md").content.length > 0);
   assert.equal(task.variants[0].duration, null);
   assert.equal(task.variants[0].timeline[0].time, "封面");
   // 图文型不计视频算力
@@ -149,7 +186,9 @@ test("video skills still deliver a video pack", () => {
     brandKit: defaultBrandKit
   });
 
-  assert.ok(task.exports[0].files.includes("video.mp4"));
+  assert.ok(task.exports[0].fileNames.includes("video.mp4"));
+  // 视频文件本期仍为占位，不生成真实二进制（守护硬约束）
+  assert.equal(task.exports[0].files.find(file => file.name === "video.mp4").kind, "placeholder");
   assert.equal(task.variants[0].duration, 15);
   assert.ok(task.credits.video > 0);
 });
@@ -214,4 +253,40 @@ test("single agent retry is traceable and billed", () => {
   assert.equal(retried.events.length, beforeEvents + 1);
   assert.equal(retried.events.at(-1).event, "agent_retried");
   assert.equal(retried.events.at(-1).agentId, "script");
+});
+
+// ---- export files content-ization (P2) ----
+test("buildExportFiles inlines real text content for image-first notes", () => {
+  const brief = normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" });
+  const skill = findSkill("rednote_seeding_note_v1");
+  const variant = runCreativeWorkflow({ brief, skillId: "rednote_seeding_note_v1" }).variants[0];
+  const files = buildExportFiles({ brief, variant, skill });
+  const byName = Object.fromEntries(files.map(file => [file.name, file]));
+
+  assert.ok(byName["copy.md"].content.includes(variant.hook));
+  assert.ok(byName["copy.md"].content.includes(variant.cta));
+  assert.equal(byName["hashtags.txt"].content.split("\n").length, variant.hashtags.length);
+  assert.ok(!files.some(file => file.name === "video.mp4"));
+});
+
+test("buildExportFiles cover source toggles with variant.imageUrl", () => {
+  const brief = normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" });
+  const skill = findSkill("rednote_seeding_note_v1");
+  const base = runCreativeWorkflow({ brief, skillId: "rednote_seeding_note_v1" }).variants[0];
+
+  const without = buildExportFiles({ brief, variant: base, skill });
+  assert.equal(without.find(file => file.name === "cover.png").source, "placeholder");
+
+  const withImage = buildExportFiles({ brief, variant: { ...base, imageUrl: "data:image/png;base64,X" }, skill });
+  assert.equal(withImage.find(file => file.name === "cover.png").source, "variantImage");
+});
+
+test("buildExportFiles keeps video.mp4 a placeholder (no binary this sprint)", () => {
+  const brief = normalizeBrief({ productName: "NovaGlow Lamp", platform: "抖音" });
+  const skill = findSkill("ecom_tiktok_product_ad_v1");
+  const variant = runCreativeWorkflow({ brief, skillId: "ecom_tiktok_product_ad_v1" }).variants[0];
+  const files = buildExportFiles({ brief, variant, skill });
+
+  assert.equal(files.find(file => file.name === "video.mp4").kind, "placeholder");
+  assert.ok(files.find(file => file.name === "storyboard.csv").content.startsWith("time,shot,action,caption"));
 });

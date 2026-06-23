@@ -1874,6 +1874,34 @@ button {
   font-size: 15px;
 }
 
+.export-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.export-downloads .ghost-btn {
+  font-size: 12px;
+  padding: 4px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.export-downloads .ghost-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.32);
+}
+
+.export-downloads .ghost-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* ---------- meters ---------- */
 .credit-meter,
 .health-bar {
@@ -4010,6 +4038,178 @@ body::after {
   box-shadow: var(--glow-cyan);
 }
 
+/* —— 创作参数条：平台 / 受众 / Skill / 素材（三模式共用）—— */
+.oc-params {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.oc-param {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.oc-param-wide {
+  grid-column: 1 / -1;
+}
+
+.oc-param-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.oc-param-platforms {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.oc-platform-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), background 0.2s var(--ease);
+}
+
+.oc-platform-chip em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--muted-2);
+}
+
+.oc-platform-chip.on {
+  border-color: var(--cyan);
+  box-shadow: var(--glow-cyan);
+  background: color-mix(in srgb, var(--cyan) 14%, var(--surface-3));
+}
+
+.oc-platform-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.oc-param-input,
+.oc-param-select {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+
+.oc-param-input:focus,
+.oc-param-select:focus {
+  outline: none;
+  border-color: var(--cyan);
+  box-shadow: var(--glow-cyan);
+}
+
+.oc-materials {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.oc-material-add {
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--line);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color 0.2s var(--ease), color 0.2s var(--ease);
+}
+
+.oc-material-add:hover:not(:disabled) {
+  border-color: var(--cyan);
+  color: var(--text);
+}
+
+.oc-material-add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.oc-material-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 4px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  font-size: 12px;
+  max-width: 180px;
+}
+
+.oc-material-chip em {
+  font-style: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oc-material-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.oc-material-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.oc-material-remove:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.oc-material-error {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--danger);
+  margin: 2px 0 0;
+}
+
 .oc-body {
   display: flex;
   flex-direction: column;
@@ -4320,16 +4520,46 @@ body::after {
   letter-spacing: -2px;
 }
 
-/* —— 手动 / 导演台：左控件 + 右画布主区双列 —— */
-/* 手动模式下 oc-panel 跨满 Workbench 整行（见 .workbench-layout.is-manual），
-   内部再分左右双列：左侧控件窄列、右侧流程画布主区。
-   保持基类 overflow:hidden（裁掉星核 ::after 辉光），双列网格在面板内不溢出。 */
-.oc-manual-grid {
+/* —— 手动 / 导演台：RoboNeo 式整屏对话流工作台 —— */
+
+/* 整屏撑满高度链（仅手动、未出结果时）：main-surface 定高 → page-stack 填高 →
+   工作台 flex 填满 → oc-panel-manual 占满 → 画布与对话栏撑到视口底（解决「下方没撑满」）。
+   出结果后(.manual-result)恢复常规流（可滚动），见 .workbench-layout.is-manual.manual-result。 */
+.main-surface:has(.workbench-layout.is-manual:not(.manual-result)) {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+/* page-stack 基类是 grid（单行 auto 不会撑满）；填高场景改为 flex 列，子级 flex:1 才真正填满。 */
+.main-surface:has(.workbench-layout.is-manual:not(.manual-result)) .page-stack {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.workbench-layout.is-manual:not(.manual-result) {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.workbench-layout.is-manual:not(.manual-result) > .oc-panel-manual {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 手动面板内左右双列：左侧对话栏窄列、右侧流程画布主区。
+   oc-panel 基类是 flex column，故 grid flex:1 即填满面板余高。 */
+.oc-panel-manual .oc-manual-grid {
+  flex: 1;
   display: grid;
-  grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.4fr);
+  grid-template-columns: minmax(300px, 0.78fr) minmax(0, 1.5fr);
   gap: 16px;
   align-items: stretch;
-  min-height: 640px;
+  min-height: 0;
+}
+/* 出结果(3 行布局)时画布区给个高度下限，避免被挤扁。 */
+.workbench-layout.is-manual.manual-result .oc-manual-grid {
+  min-height: 560px;
 }
 
 .oc-manual-side {
@@ -4337,6 +4567,7 @@ body::after {
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+  min-height: 0;
 }
 
 /* 右侧画布主区：纵向排布，画布 flex 撑满，底部操作坞贴底。 */
@@ -4345,13 +4576,146 @@ body::after {
   flex-direction: column;
   gap: 10px;
   min-width: 0;
+  min-height: 0;
 }
 
-/* 手动主区里的对话记录可随侧栏增高，不再写死小高度。 */
-.oc-manual-side .oc-chat-log {
+/* 对话流容器：欢迎卡 + 创意基底 + 消息流，flex:1 填满；消息流内部滚动。 */
+.oc-flow {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+.oc-flow .oc-chat-log {
   flex: 1;
   max-height: none;
-  min-height: 120px;
+  min-height: 80px;
+}
+
+/* 欢迎卡（对应 RoboNeo「欢迎使用」卡） */
+.oc-welcome {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--glass);
+}
+.oc-welcome-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.oc-welcome-avatar {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--plasma);
+  color: #05060b;
+  font-weight: 800;
+  font-size: 13px;
+}
+.oc-welcome-row strong {
+  display: block;
+  font-size: 14px;
+}
+.oc-welcome-row small {
+  color: var(--muted-2);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.oc-welcome p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* 钉底输入区：快捷指令 + 输入框 + 运行（对应 RoboNeo 底部输入 + 工具行） */
+.oc-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.oc-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.oc-quick-chip {
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 0.2s var(--ease), color 0.2s var(--ease), background 0.2s var(--ease);
+}
+.oc-quick-chip:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--line-strong);
+  background: var(--glass);
+}
+.oc-quick-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 生成结果内联卡（RoboNeo 把生成内容嵌进对话流的对应物） */
+.oc-result-card {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 11px 13px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--mint);
+  background: color-mix(in srgb, var(--mint) 10%, var(--surface));
+  box-shadow: var(--glow-mint);
+}
+.oc-result-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.oc-result-score {
+  display: grid;
+  place-items: center;
+  min-width: 30px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--mint);
+  color: #05060b;
+  font-weight: 800;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+.oc-result-head strong {
+  font-size: 13px;
+}
+.oc-result-hook {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.45;
+}
+.oc-result-caption {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.oc-result-foot {
+  font-size: 10px;
+  color: var(--muted-2);
+  font-family: var(--mono);
 }
 
 /* —— 手动画布底部操作坞（选择/抓手/添加/撤销/重做）：仅手动模式出现 —— */
@@ -4612,11 +4976,23 @@ body::after {
   }
 }
 
-/* 窄屏：手动双列堆叠为单列（控件在上、画布在下），画布仍保持可用高度。 */
+/* 窄屏：手动双列堆叠为单列（对话栏在上、画布在下）；取消整屏填高改为常规滚动，
+   避免固定视口高度下上下两栏被挤扁。选择器特异性需 ≥ .oc-panel-manual .oc-manual-grid。 */
 @media (max-width: 1100px) {
-  .oc-manual-grid {
+  .oc-panel-manual .oc-manual-grid {
     grid-template-columns: minmax(0, 1fr);
     min-height: 0;
+  }
+  .oc-panel-manual .oc-manual-stage .oc-canvas {
+    min-height: 360px;
+  }
+  .main-surface:has(.workbench-layout.is-manual:not(.manual-result)) {
+    height: auto;
+    display: block;
+  }
+  .workbench-layout.is-manual:not(.manual-result) {
+    display: grid;
+    height: auto;
   }
 }
 

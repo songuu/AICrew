@@ -20,7 +20,9 @@ import {
   rotateShapeTo,
   HANDLE_ORDER,
   HANDLE_SIGN,
-  sanitizeObjects
+  sanitizeObjects,
+  placeGeneratedImage,
+  placeGeneratedImages
 } from "../../lib/canvas/model.js";
 import {
   createViewport,
@@ -79,7 +81,9 @@ const IMPORT_ACCEPT = {
   video: /^video\/(mp4|webm|ogg)$/
 };
 
-export function CanvasStudio() {
+// onGenerateImage(prompt) -> Promise<imageUrl>：AI 能力由组件层注入，lib/canvas/* 保持零依赖 ai。
+// covers：本次任务的封面图 [{src, name}]，供「导入封面」一键铺入。
+export function CanvasStudio({ onGenerateImage, covers = [] }) {
   const [history, setHistory] = useState(() => createHistory(createScene()));
   const [viewport, setViewport] = useState(() => createViewport());
   const [tool, setTool] = useState(TOOL.SELECT);
@@ -90,6 +94,7 @@ export function CanvasStudio() {
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [notice, setNotice] = useState("");
   const [hoverHandle, setHoverHandle] = useState(null);
+  const [aiBusy, setAiBusy] = useState(false);
 
   const svgRef = useRef(null);
   const fileRef = useRef(null);
@@ -404,6 +409,50 @@ export function CanvasStudio() {
     }
   }
 
+  // AI 生成图落画布：prompt → 注入的 onGenerateImage → placeGeneratedImage 单次 commit（一手势一历史）。
+  async function generateOnCanvas() {
+    setAddOpen(false);
+    if (!onGenerateImage || aiBusy) return;
+    const prompt = window.prompt("描述要生成的图像，例如：露营灯产品场景图");
+    if (!prompt || !prompt.trim()) return;
+    setAiBusy(true);
+    setNotice("正在生成图像…");
+    try {
+      const src = await onGenerateImage(prompt.trim());
+      if (!src) {
+        setNotice("生成失败，请重试");
+        return;
+      }
+      const size = viewSize();
+      const center = screenToWorld(viewport, size.width / 2, size.height / 2);
+      const placed = placeGeneratedImage(scene, {
+        src,
+        name: prompt.trim().slice(0, 20),
+        box: { x: center.x - 120, y: center.y - 80 }
+      });
+      setHistory(h => commit(h, placed));
+      setSelectedId(placed.objects.at(-1).id);
+      setNotice("");
+    } catch (error) {
+      setNotice("生成失败：" + (error?.message || "未知错误"));
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
+  // 一键把本次任务的多张封面网格铺入画布（整批单次 commit → 一步撤销）。
+  function importCovers() {
+    setAddOpen(false);
+    const items = (covers || []).filter(cover => cover && cover.src);
+    if (!items.length) {
+      setNotice("当前任务还没有封面图，先去工作台生成。");
+      return;
+    }
+    const size = viewSize();
+    const origin = screenToWorld(viewport, size.width / 2, size.height / 2);
+    setHistory(h => commit(h, placeGeneratedImages(h.present, items, { startX: origin.x - 260, startY: origin.y - 90, columns: 3 })));
+  }
+
   function onFileChange(event) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -521,6 +570,18 @@ export function CanvasStudio() {
                   <em>{item.label}</em>
                 </button>
               ))}
+              {onGenerateImage && (
+                <button type="button" role="menuitem" onClick={generateOnCanvas} disabled={aiBusy}>
+                  <span className="add-icon">✨</span>
+                  <em>{aiBusy ? "生成中…" : "AI 生成图"}</em>
+                </button>
+              )}
+              {covers.length > 0 && (
+                <button type="button" role="menuitem" onClick={importCovers}>
+                  <span className="add-icon">▦</span>
+                  <em>导入本次封面</em>
+                </button>
+              )}
             </div>
           )}
         </div>

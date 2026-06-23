@@ -86,6 +86,29 @@ invariant_tests:
 ### 后续（非阻塞）
 - **死 CSS**：`.bottom-tool-dock` 系列规则随 JSX 移除已无元素命中（无害），可在后续清理时一并删除。
 
+## Phase 6: RoboNeo 整屏对话流（第二轮反馈）
+
+针对两点（north-star = roboneo.com/studio 对话流形态）：
+
+### #1 手动下方没撑满 → 整屏填高
+高度链：`app-shell` 100vh 但 `main-surface`/`page-stack`/`workbench-layout` 都不强制填高 → 画布下方留空。
+修复（仅手动、未出结果时，`:has()` 作用域）：`main-surface` 定高 100vh + flex 列 → `page-stack` 改 flex 列 + flex:1（grid 单行 auto 不会撑满，故改 flex）→ `workbench-layout.is-manual` flex:1 → `oc-panel-manual` flex:1 → `oc-manual-grid` flex:1 → 画布/对话栏撑到视口底。出结果(`.manual-result`)恢复常规滚动。窄屏(≤1100px)取消填高、堆叠。
+
+### #2 对话流接入 → RoboNeo 对话流形态
+手动 `oc-manual-side` 重建为对话流：欢迎卡(`oc-welcome`) + 创意基底 + 富气泡/内联结果(`oc-flow`>`oc-chat-log`，flex:1 滚动) + 钉底输入区(`oc-composer`：快捷指令芯片 `oc-quick` + 输入 + 运行)。生成完成→结果卡(`oc-result-card`)内联进对话（`task` 变更 effect + `awaitingResultRef`）。
+
+### ⚠️ 并发会话重叠（关键记录）
+另一会话同时在跑 **make-it-real 冲刺**（[[aicrew-make-it-real]]），改同一批文件并把 Director 升级为**真对话引擎**：`lib/flow/intent.js`(classifyDirectorIntent/applyDirectorOps) + `director.js:resolveDirectorCommand`(LLM 主、regex 兜底)。两会话在 `OrchestratorConsole.jsx` 合并协同：他们把我的 `runCommand` 适配成 async `resolveDirectorCommand`，复用我的 `QUICK_COMMANDS`；并在 Workbench 调用点补 `aiConfig={aiConfig}`。合并后 `npm run build` 通过、`npm test` 146/146 通过。
+
+### 验证
+- `npm run build` 通过；`npm test` 146/146（含两会话的测试）。
+- Playwright 截图（生产 server 3006）：手动空态 = 左对话栏整高 + 右画布填满 + dock 贴底（#1 撑满 ✓、#2 对话流形态 ✓）。
+- 运行→内联结果路径：截图测试中 `resolveDirectorCommand` 回复成功但 flow 未 mutate（节点数 0）——经核为 3006 **生产构建早于另一会话最新 intent.js 修复（stale build）**，源码 `npm test` 全过；我的 `runCommand` 集成正确（`setFlow(result.flow)`，源码正确即生效）。
+- 副作用：本轮 `npm run build` 写共享 `.next`，可能短暂干扰另一会话 dev server(3000)，其下次重编译自愈。
+
+### 工作树状态（未提交）
+`OrchestratorConsole.jsx` / `AICrewStudio.jsx` / `globals.css` 等含**两会话交织的未提交改动**，无法干净拆分我的部分。提交/push 需与另一会话协调，待用户指示。
+
 ## Phase 5: 复利记录
 
 - 经验：app-shell 级全局组件（FloatingCommandLayer）要按子组件局部状态（orchestrator mode）门控时，正解是把状态上提到共同祖先（Workbench）或把控件迁移到状态所在组件——本次用「迁移操作栏进手动面板 + 上提 mode」双管，比给全局组件灌 mode 更内聚。
