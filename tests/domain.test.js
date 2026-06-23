@@ -16,7 +16,10 @@ import {
   reviseVariantHook,
   retryAgentStep,
   runCreativeWorkflow,
-  saveSkillFromProject
+  saveSkillFromProject,
+  skills,
+  skillGroups,
+  skillsInGroup
 } from "../lib/domain.js";
 
 test("normalizes incomplete brief with PRD defaults", () => {
@@ -196,6 +199,51 @@ test("video skills still deliver a video pack", () => {
 test("detects 小红书 platform from freeform brief", () => {
   const brief = parseBriefText("产品 玻尿酸面膜，受众 抗老人群，目标 提升收藏，小红书 种草风格");
   assert.equal(brief.platform, "小红书");
+});
+
+// ---- RoboNeo 式技能选择器：数据模型 ----
+test("skillGroups exposes 推荐 first, then the 带货 categories", () => {
+  assert.equal(skillGroups[0].id, "featured");
+  assert.equal(skillGroups[0].name, "推荐");
+  const ids = skillGroups.map(group => group.id);
+  assert.deepEqual(ids, ["featured", "ecom", "beauty", "shortvideo"]);
+});
+
+test("every skill carries picker metadata (icon/group/promise/bestFor)", () => {
+  const groupIds = new Set(skillGroups.map(group => group.id));
+  for (const skill of skills) {
+    assert.ok(skill.icon, `${skill.id} missing icon`);
+    assert.ok(groupIds.has(skill.group), `${skill.id} has unknown group ${skill.group}`);
+    assert.ok(skill.group !== "featured", `${skill.id} group must be a real category, not the 推荐 alias`);
+    assert.ok(skill.promise && skill.bestFor, `${skill.id} missing promise/bestFor`);
+  }
+});
+
+test("skillsInGroup(featured) returns only featured skills", () => {
+  const featured = skillsInGroup("featured");
+  assert.ok(featured.length > 0);
+  assert.ok(featured.every(skill => skill.featured === true));
+  // 无参 / 未知分类回退到推荐，避免空列表
+  assert.deepEqual(skillsInGroup().map(s => s.id), featured.map(s => s.id));
+});
+
+test("skillsInGroup filters by group and includes UGC 种草测评 under 美妆护肤", () => {
+  const beauty = skillsInGroup("beauty");
+  assert.ok(beauty.every(skill => skill.group === "beauty"));
+  assert.ok(beauty.some(skill => skill.id === "ugc_review_v1"));
+});
+
+test("new UGC 种草测评 skill runs as an image-first pack (no video)", () => {
+  const task = runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "ugc_review_v1",
+    brandKit: defaultBrandKit
+  });
+  assert.equal(task.skillName, "UGC 种草测评");
+  assert.ok(task.variants.length >= 1);
+  assert.equal(task.variants[0].duration, null);
+  assert.equal(task.credits.video, 0);
+  assert.ok(!task.exports[0].fileNames.includes("video.mp4"));
 });
 
 test("initial state contains PRD product surfaces", () => {

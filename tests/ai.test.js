@@ -491,3 +491,62 @@ test("maxImagesPerRun caps how many variants get images while keeping copy", asy
   assert.ok(!result.variants[2].imageUrl);
   assert.ok(result.variants[2].caption);
 });
+
+// ---- skill-driven generation: 选中技能的意图注入文案/出图 prompt ----
+function promptCaptureRouter(textPrompts, imagePrompts) {
+  return (url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.mode === "image") {
+      imagePrompts.push(body.prompt);
+      return jsonResponse({ imageUrl: "data:image/png;base64,IMG" });
+    }
+    textPrompts.push(body.prompt);
+    return jsonResponse({ text: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) });
+  };
+}
+
+test("selecting a preset skill injects its intent into copy and image prompts", async () => {
+  const textPrompts = [];
+  const imagePrompts = [];
+  const { fetchImpl } = makeFetch(promptCaptureRouter(textPrompts, imagePrompts));
+  await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "ugc_review_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+  assert.ok(textPrompts.length > 0 && imagePrompts.length > 0);
+  // 文案与出图 prompt 都应携带技能名 + 风格锚点关键词「创作技能」。
+  assert.ok(textPrompts.every(prompt => prompt.includes("UGC 种草测评") && prompt.includes("创作技能")));
+  assert.ok(imagePrompts.every(prompt => prompt.includes("UGC 种草测评") && prompt.includes("创作技能")));
+});
+
+test("a flow-composed skill without bestFor does not inject a skill clause", async () => {
+  const textPrompts = [];
+  const imagePrompts = [];
+  const { fetchImpl } = makeFetch(promptCaptureRouter(textPrompts, imagePrompts));
+  // 模拟 flowToSkill 的合成 skill：bestFor 为空串 → prompt 注入应跳过（向后兼容）。
+  const synthetic = {
+    id: "flow_synthetic",
+    name: "自定义编排",
+    category: "Flow",
+    stage: "manual",
+    estimatedCredits: 12,
+    formats: ["封面", "图文", "文案"],
+    agents: ["visual", "copy", "qa"],
+    palette: ["#8bd3ff", "#ff7a90", "#f9c74f"],
+    promise: "由编排图实时生成",
+    bestFor: ""
+  };
+  await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "露营灯", platform: "小红书" }),
+    skill: synthetic,
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+  assert.ok(textPrompts.length > 0 && imagePrompts.length > 0);
+  assert.ok(textPrompts.every(prompt => !prompt.includes("创作技能")));
+  assert.ok(imagePrompts.every(prompt => !prompt.includes("创作技能")));
+});

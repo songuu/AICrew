@@ -9,7 +9,7 @@
 // 三者最终都把一个合法 Flow 交给 onRun(brief, flow, meta) 执行，产出契约完全一致。
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { agents, skills, parseBriefText, findPlatformPreset, platformPresets, mergeCreativeParams } from "../lib/domain.js";
+import { agents, skills, skillGroups, skillsInGroup, parseBriefText, findPlatformPreset, platformPresets, mergeCreativeParams } from "../lib/domain.js";
 import {
   createFlow,
   toggleAgent,
@@ -39,6 +39,81 @@ const MODES = [
 ];
 
 const PLACEHOLDER = "用一句话描述你的创意，例如：给露营灯做一组小红书种草笔记";
+
+// —— RoboNeo 式技能选择器浮层：分类 tab + 技能卡片 ——
+// 卡片点击即选中并播种 flow（onPick → onPickSkill）；分组 / 列表由 domain 的
+// skillGroups / skillsInGroup 单一数据源驱动，UI 不重复硬编码分组逻辑。
+function SkillPickerPanel({ tab, onTab, selectedId, onPick, onClose, busy }) {
+  const list = skillsInGroup(tab);
+  return (
+    <>
+      {/* 透明背板：点击空白处关闭浮层 */}
+      <button type="button" className="oc-skill-backdrop" aria-label="关闭技能选择" onClick={onClose} />
+      <div className="oc-skillpanel" role="dialog" aria-label="选择创作技能">
+        <div className="oc-skillpanel-head">
+          <div>
+            <strong>Skills</strong>
+            <small>选择一个创作技能，AICrew 按该技能编排并生成</small>
+          </div>
+          <button type="button" className="oc-skillpanel-close" onClick={onClose} aria-label="关闭技能选择">
+            ×
+          </button>
+        </div>
+        <div className="oc-skill-tabs" role="tablist" aria-label="技能分类">
+          {skillGroups.map(group => (
+            <button
+              key={group.id}
+              type="button"
+              role="tab"
+              aria-selected={tab === group.id}
+              className={`oc-skill-tab ${tab === group.id ? "on" : ""}`}
+              onClick={() => onTab(group.id)}
+              title={group.desc}
+            >
+              {group.name}
+            </button>
+          ))}
+        </div>
+        <div className="oc-skill-list" role="listbox" aria-label="技能列表">
+          {list.length === 0 && <p className="oc-skill-empty">该分类暂无技能</p>}
+          {list.map(skill => {
+            const active = selectedId === skill.id;
+            return (
+              <button
+                key={skill.id}
+                type="button"
+                role="option"
+                aria-selected={active}
+                disabled={busy}
+                className={`oc-skill-card ${active ? "on" : ""}`}
+                style={{ "--c1": skill.palette?.[0] || "#8bd3ff", "--c2": skill.palette?.[1] || "#ff7a90" }}
+                onClick={() => onPick(skill.id)}
+                title={skill.bestFor}
+              >
+                <span className="oc-skill-card-icon">{skill.icon || "✦"}</span>
+                <span className="oc-skill-card-body">
+                  <span className="oc-skill-card-top">
+                    <strong>{skill.name}</strong>
+                    <em>{skill.stage}</em>
+                  </span>
+                  <small>{skill.promise}</small>
+                  <span className="oc-skill-card-foot">
+                    ≈ {skill.estimatedCredits} credits · {skill.formats?.[0]}
+                  </span>
+                </span>
+                {active && (
+                  <span className="oc-skill-card-check" aria-hidden>
+                    ✓
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </>
+  );
+}
 
 // —— 横向能量链：自动 / 半自动模式下可视化当前编排 ——
 function NodeChain({ flow, revealCount = Infinity }) {
@@ -167,6 +242,10 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
   const [materialError, setMaterialError] = useState("");
   const fileInputRef = useRef(null);
 
+  // —— RoboNeo 式技能选择器状态：浮层开合 + 当前分类 tab ——
+  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+  const [skillTab, setSkillTab] = useState(skillGroups[0].id);
+
   // 指定 skill：立即用该 skill 播种 flow，使节点链 / credits 同步反映选择；清空则回到自动编排。
   function onPickSkill(skillId) {
     setParams(prev => ({ ...prev, skillId }));
@@ -176,6 +255,17 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
       setPhase("ready");
       setRevealCount(Infinity);
     }
+  }
+
+  // 卡片选中：选定技能后关闭浮层（RoboNeo 选中即收起，技能以 chip 锚定输入框）。
+  function pickSkillFromCard(skillId) {
+    onPickSkill(skillId);
+    setSkillPickerOpen(false);
+  }
+
+  // 清除技能：回到自动编排 / 自由对话。仅清 skillId，不强行重置已搭好的 flow。
+  function clearSkill() {
+    setParams(prev => ({ ...prev, skillId: "" }));
   }
 
   // 上传素材：组件侧 FileReader 读 dataURL，纯校验（MIME/体量）下沉 materialStore。
@@ -287,10 +377,15 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
     if (mode === "manual") awaitingResultRef.current = true;
     // 平台 / 受众 / 素材收敛进 brief（唯一事实来源）；创意文本或路由 brief 作基底。
     const brief = mergeCreativeParams(briefOverride || parseBriefText(idea), params);
+    // 选中预设 skill 时透传创作意图（promise/bestFor），经 flowToSkill 进入 AI prompt，
+    // 使「选了哪个技能」真正改变生成结果（对标 RoboNeo 技能驱动生成）。
+    const picked = skills.find(skill => skill.id === params.skillId);
     const meta = {
       name: skillNameFor(params.skillId) || route?.matchedSkill?.name || "自定义编排",
       category: MODES.find(m => m.id === mode)?.name,
-      skillId: params.skillId || undefined
+      skillId: params.skillId || undefined,
+      promise: picked?.promise,
+      bestFor: picked?.bestFor
     };
     onRun(brief, targetFlow, meta);
   }
@@ -401,6 +496,49 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
     </>
   );
 
+  // 当前选中的技能对象（驱动 chip 展示与浮层选中态）。
+  const selectedSkill = skills.find(skill => skill.id === params.skillId) || null;
+
+  // 技能选择字段：trigger（兼作选中 chip）+ 清除按钮 + 浮层。三模式共用同一实例，
+  // 保证同一时刻只挂载一个浮层（手动模式在 composer 渲染，自动/半自动在 paramsBar 渲染）。
+  const skillField = (
+    <div className="oc-skill-field">
+      <div className="oc-skill-control">
+        <button
+          type="button"
+          className={`oc-skill-trigger ${selectedSkill ? "on" : ""}`}
+          disabled={busy}
+          aria-haspopup="dialog"
+          aria-expanded={skillPickerOpen}
+          onClick={() => setSkillPickerOpen(open => !open)}
+          title={selectedSkill ? selectedSkill.promise : "选择创作技能"}
+          style={selectedSkill ? { "--c1": selectedSkill.palette?.[0] || "#a78bfa" } : undefined}
+        >
+          <span className="oc-skill-trigger-icon">{selectedSkill ? selectedSkill.icon || "✦" : "✦"}</span>
+          <span className="oc-skill-trigger-text">{selectedSkill ? selectedSkill.name : "选择创作技能"}</span>
+          <span className="oc-skill-caret" aria-hidden>
+            ▾
+          </span>
+        </button>
+        {selectedSkill && (
+          <button type="button" className="oc-skill-clear" disabled={busy} onClick={clearSkill} aria-label="清除技能">
+            ×
+          </button>
+        )}
+      </div>
+      {skillPickerOpen && (
+        <SkillPickerPanel
+          tab={skillTab}
+          onTab={setSkillTab}
+          selectedId={params.skillId}
+          onPick={pickSkillFromCard}
+          onClose={() => setSkillPickerOpen(false)}
+          busy={busy}
+        />
+      )}
+    </div>
+  );
+
   // 创作参数条：平台 / 受众 / 指定 skill / 上传素材，三模式共用（PRD §8.2 required_inputs）。
   const paramsBar = (
     <div className="oc-params">
@@ -434,20 +572,14 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
         />
       </label>
 
-      <label className="oc-param">
-        <span className="oc-param-label">Skill</span>
-        <select
-          className="oc-param-select"
-          value={params.skillId}
-          disabled={busy}
-          onChange={event => onPickSkill(event.target.value)}
-        >
-          <option value="">自动匹配（中枢决定）</option>
-          {skills.map(skill => (
-            <option key={skill.id} value={skill.id}>{skill.name}</option>
-          ))}
-        </select>
-      </label>
+      {/* 手动模式的技能选择移到对话输入框上方（RoboNeo 形态），此处仅在自动/半自动渲染，
+          保证同一时刻只挂载一个技能浮层。 */}
+      {mode !== "manual" && (
+        <div className="oc-param">
+          <span className="oc-param-label">Skill</span>
+          {skillField}
+        </div>
+      )}
 
       <div className="oc-param oc-param-wide">
         <span className="oc-param-label">素材</span>
@@ -534,8 +666,10 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
               </div>
             </div>
 
-            {/* 钉底输入区：快捷指令 + 输入框 + 发送 + 运行 */}
+            {/* 钉底输入区：技能选择（chip + 浮层）+ 快捷指令 + 输入框 + 发送 + 运行 */}
             <div className="oc-composer">
+              {/* RoboNeo 形态：技能以 chip / trigger 锚定在输入框上方，点击浮层选择 */}
+              <div className="oc-skill-row">{skillField}</div>
               <div className="oc-quick" role="group" aria-label="快捷指令">
                 {QUICK_COMMANDS.map(q => (
                   <button key={q} type="button" className="oc-quick-chip" disabled={busy} onClick={() => runCommand(q)}>

@@ -4666,6 +4666,273 @@ body::after {
   cursor: not-allowed;
 }
 
+/* —— RoboNeo 式技能选择器：trigger（兼 chip）+ 分类 tab 浮层 + 技能卡片 —— */
+.oc-skill-row {
+  display: flex;
+}
+.oc-skill-field {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+.oc-skill-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.oc-skill-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 7px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.2s var(--ease), background 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+.oc-skill-trigger:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--glass);
+}
+.oc-skill-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* 选中态即 RoboNeo 的「技能 chip」：以技能主色描边 + 微光 */
+.oc-skill-trigger.on {
+  border-color: color-mix(in srgb, var(--c1, var(--violet)) 60%, transparent);
+  background: color-mix(in srgb, var(--c1, var(--violet)) 14%, var(--surface));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c1, var(--violet)) 24%, transparent) inset;
+}
+.oc-skill-trigger-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+.oc-skill-trigger-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.oc-skill-caret {
+  color: var(--muted);
+  font-size: 10px;
+}
+.oc-skill-clear {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+.oc-skill-clear:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+/* 透明背板：覆盖全屏，点击关闭浮层 */
+.oc-skill-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  border: 0;
+  background: transparent;
+  cursor: default;
+}
+/* 浮层向上弹出（输入框钉底，浮层在其上方，对应参考图） */
+.oc-skillpanel {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 41;
+  width: min(360px, 84vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid var(--line-strong);
+  background: var(--glass-strong);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+/* 自动 / 半自动：技能字段在参数条顶部，浮层改为向下弹出（避免被面板顶边裁剪）。
+   手动模式（composer 钉底）保留默认向上弹出。 */
+.oc-param .oc-skillpanel {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+.oc-skillpanel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.oc-skillpanel-head strong {
+  display: block;
+  font-size: 13px;
+}
+.oc-skillpanel-head small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.oc-skillpanel-close {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 15px;
+  cursor: pointer;
+}
+.oc-skillpanel-close:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.oc-skill-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.oc-skill-tab {
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.2s var(--ease), border-color 0.2s var(--ease), background 0.2s var(--ease);
+}
+.oc-skill-tab:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.oc-skill-tab.on {
+  color: #05060b;
+  background: var(--violet);
+  border-color: var(--violet);
+  font-weight: 700;
+}
+.oc-skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.oc-skill-empty {
+  margin: 0;
+  padding: 18px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+.oc-skill-card {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s var(--ease), background 0.2s var(--ease), transform 0.15s var(--ease);
+}
+.oc-skill-card:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: var(--line-strong);
+  background: var(--glass);
+}
+.oc-skill-card:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.oc-skill-card.on {
+  border-color: color-mix(in srgb, var(--c1, var(--violet)) 70%, transparent);
+  background: color-mix(in srgb, var(--c1, var(--violet)) 12%, var(--surface));
+}
+.oc-skill-card-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  font-size: 18px;
+  background: linear-gradient(140deg, color-mix(in srgb, var(--c1, #8bd3ff) 30%, var(--surface)), color-mix(in srgb, var(--c2, #ff7a90) 26%, var(--surface)));
+  border: 1px solid color-mix(in srgb, var(--c1, #8bd3ff) 36%, transparent);
+}
+.oc-skill-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.oc-skill-card-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.oc-skill-card-top strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-skill-card-top em {
+  flex: none;
+  font-size: 9px;
+  font-style: normal;
+  font-family: var(--mono);
+  color: var(--muted-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+.oc-skill-card-body small {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.oc-skill-card-foot {
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--muted-2);
+}
+.oc-skill-card-check {
+  flex: none;
+  align-self: center;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--c1, var(--violet));
+  color: #05060b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 /* 生成结果内联卡（RoboNeo 把生成内容嵌进对话流的对应物） */
 .oc-result-card {
   align-self: stretch;
