@@ -5101,153 +5101,46 @@ body::after {
   font-family: var(--mono);
 }
 
-/* —— 手动画布底部操作坞（选择/抓手/添加/撤销/重做）：仅手动模式出现 —— */
-.oc-canvas-dock {
-  position: fixed;
-  right: 126px;
-  bottom: max(18px, env(safe-area-inset-bottom));
-  z-index: 45;
-  display: flex;
-  align-items: stretch;
-  justify-content: flex-end;
-  gap: 8px;
-  width: fit-content;
-  max-width: calc(100vw - 144px);
-  padding: 8px;
-  border-radius: 14px;
-  border: 1px solid var(--line);
-  background: var(--glass-strong);
-  backdrop-filter: blur(22px);
-  -webkit-backdrop-filter: blur(22px);
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.34);
-  pointer-events: auto;
-}
-
-.oc-dock-btn {
-  display: grid;
-  place-items: center;
-  gap: 6px;
-  min-width: 62px;
-  min-height: 56px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface-3);
-  color: var(--text);
-  cursor: pointer;
-  transition: border-color 0.2s var(--ease), background 0.2s var(--ease), transform 0.2s var(--ease);
-}
-
-.oc-dock-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-  border-color: var(--line-strong);
-  background: var(--glass);
-}
-
-.oc-dock-btn.active {
-  border-color: rgba(180, 140, 255, 0.5);
-  background: rgba(124, 69, 255, 0.24);
-  box-shadow: var(--glow-violet);
-}
-
-.oc-dock-btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.42;
-}
-
-.oc-dock-icon {
-  font-size: 18px;
-  line-height: 1;
-}
-
-.oc-dock-btn em {
-  color: var(--muted);
-  font-style: normal;
-  font-family: var(--mono);
-  font-size: 10px;
-}
-
-.oc-dock-sep {
-  width: 1px;
-  margin: 8px 4px;
-  background: var(--line);
-}
-
-/* 手动主区画布：viewport 撑满 stage 余高（flex:1）、内容滚动；不再写死 280px。 */
-.oc-canvas {
-  position: relative;
-  flex: 1;
+/* —— 统一画布：手动 stage 内嵌 CanvasStudio（复用真画布运行时） —— */
+/* CanvasStudio 默认整页尺寸（height:calc(100vh-150px)）；嵌入手动 stage 时改为填满 flex 余高，
+   保留 420px 下限（沿用迁移前 .oc-canvas 的底，防 flex 链未撑高时坍塌）。 */
+.oc-manual-stage .canvas-view.is-embedded {
+  height: auto;
   min-height: 420px;
-  overflow: auto;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
-  background:
-    radial-gradient(circle at 50% 0, rgba(124, 92, 255, 0.08), transparent 60%),
-    linear-gradient(var(--line-soft) 1px, transparent 1px) 0 0 / 100% 28px,
-    linear-gradient(90deg, var(--line-soft) 1px, transparent 1px) 0 0 / 28px 100%,
-    var(--bg-2);
+  flex: 1;
 }
 
-/* inner：按节点坐标定尺寸的坐标系，至少撑满 viewport，超出则滚动。 */
-.oc-canvas-inner {
-  position: relative;
-  min-width: 100%;
-  min-height: 100%;
+/* 嵌入态：右下视图坞 + 图层面板左移，避让手动工作台仍渲染的全局 right-tool-rail（fixed right:18px），
+   不重叠（/canvas 视图不渲染该 rail，故仅嵌入态需此偏移）。 */
+.oc-manual-stage .canvas-view.is-embedded .canvas-view-dock,
+.oc-manual-stage .canvas-view.is-embedded .canvas-layers {
+  right: 96px;
 }
 
-.oc-canvas-edges {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-.oc-edge {
+/* —— Director 流程只读 overlay（画布世界坐标系内 SVG，随 pan/zoom 缩放） —— */
+.oc-overlay-edge {
   fill: none;
   stroke: rgba(139, 211, 255, 0.55);
   stroke-width: 2;
   stroke-dasharray: 6 6;
-  animation: oc-flow-dash 0.8s linear infinite;
 }
 
-.oc-canvas-node {
-  position: absolute;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--accent, var(--cyan));
-  background: var(--surface);
-  box-shadow: 0 0 18px -6px var(--accent, var(--cyan));
-  animation: oc-pulse 2.6s var(--ease) infinite;
+.oc-overlay-node {
+  fill: var(--surface);
+  stroke-width: 1.5;
+  opacity: 0.92;
 }
 
-.oc-canvas-node-title {
+.oc-overlay-node-title {
+  fill: var(--text);
   font-size: 12px;
   font-weight: 600;
-  color: var(--text);
 }
 
-.oc-canvas-node-id {
+.oc-overlay-node-id {
+  fill: var(--muted-2);
   font-family: var(--mono);
   font-size: 9px;
-  color: var(--muted-2);
-}
-
-.oc-canvas-empty {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  color: var(--muted-2);
-  font-size: 12px;
-}
-
-.oc-future {
-  font-size: 11px;
-  color: var(--amber);
-  text-align: center;
-  opacity: 0.8;
 }
 
 /* —— 手动：对话 —— */
@@ -5347,10 +5240,6 @@ body::after {
   100% { background-position: 200% 0; }
 }
 
-@keyframes oc-flow-dash {
-  to { stroke-dashoffset: -12; }
-}
-
 @keyframes oc-reveal {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
@@ -5364,7 +5253,7 @@ body::after {
   .oc-mode.active .oc-mode-detail {
     max-width: 260px;
   }
-  .oc-canvas {
+  .oc-manual-stage .canvas-view.is-embedded {
     min-height: 320px;
   }
 }
@@ -5376,7 +5265,7 @@ body::after {
     grid-template-columns: minmax(0, 1fr);
     min-height: 0;
   }
-  .oc-panel-manual .oc-manual-stage .oc-canvas {
+  .oc-panel-manual .oc-manual-stage .canvas-view.is-embedded {
     min-height: 360px;
   }
   .main-surface:has(.workbench-layout.is-manual:not(.manual-result)) {
@@ -5387,35 +5276,11 @@ body::after {
     display: grid;
     height: auto;
   }
-  .oc-canvas-dock {
-    right: 18px;
-    max-width: calc(100vw - 36px);
-  }
-}
-
-@media (max-width: 1700px) {
-  .oc-canvas-dock {
-    right: 18px;
-    max-width: calc(100vw - 36px);
-  }
-}
-
-@media (max-width: 760px) {
-  .oc-canvas-dock {
-    left: 12px;
-    right: 12px;
-    bottom: 12px;
-    width: auto;
-    max-width: none;
-    flex-wrap: wrap;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .oc-node.lit,
-  .oc-canvas-node,
-  .oc-link.lit,
-  .oc-edge {
+  .oc-link.lit {
     animation: none;
   }
   /* 模式选择器：保留全部信息，仅去过渡 / 位移 */

@@ -17,13 +17,14 @@ import {
   orderedAgentIds,
   validateFlow,
   estimateFlowCredits,
-  isVideoFlow,
   hasAgent,
   skillToFlow
 } from "../lib/flow/model.js";
 import { routeIdeaToFlow } from "../lib/flow/router.js";
 import { resolveDirectorCommand } from "../lib/flow/director.js";
+import { computeFlowOverlay } from "../lib/flow/overlay.js";
 import { validateMaterial, normalizeMaterial } from "../lib/storage/materialStore.js";
+import { CanvasStudio } from "./canvas/CanvasStudio.jsx";
 
 const skillNameFor = skillId => skills.find(skill => skill.id === skillId)?.name || "";
 
@@ -143,82 +144,43 @@ function NodeChain({ flow, revealCount = Infinity }) {
   );
 }
 
-// —— 手动模式迷你流程画布：节点按坐标排布，SVG 连线 ——
-function FlowCanvas({ flow }) {
-  const NODE_W = 124;
-  const NODE_H = 58;
-  const byId = new Map(flow.nodes.map(node => [node.id, node]));
-  const width = Math.max(360, ...flow.nodes.map(node => node.x + NODE_W + 60));
-  const height = Math.max(220, ...flow.nodes.map(node => node.y + NODE_H + 60));
+// —— 手动模式 Director 流程：渲染为画布世界坐标系内的只读 SVG overlay ——
+// 统一画布：节点/连线叠加在 CanvasStudio 的自由画布之上，随其 pan/zoom 一起缩放。
+// 几何来自纯函数 computeFlowOverlay（可单测）；本组件只做渲染（title/accent 取自 AGENT_BY_ID）。
+// pointer-events 由父层 .canvas-overlay 统一关闭，使画布选择/绘制手势可穿透到空白处。
+function FlowOverlay({ flow }) {
+  const { nodes, edges } = computeFlowOverlay(flow);
   return (
-    // viewport（填满手动主区、滚动）+ inner（按节点坐标定尺寸的坐标系）分层，
-    // 让画布既能撑满大区域，又保留节点的绝对定位空间；空态居中于 viewport 而非 inner。
-    <div className="oc-canvas">
-      <div className="oc-canvas-inner" style={{ width, height }}>
-        <svg className="oc-canvas-edges" width={width} height={height} aria-hidden>
-          <defs>
-            <marker id="oc-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
-              <path d="M0,0 L8,3 L0,6 Z" fill="rgba(139,211,255,0.8)" />
-            </marker>
-          </defs>
-          {flow.edges.map(edge => {
-            const from = byId.get(edge.from);
-            const to = byId.get(edge.to);
-            if (!from || !to) return null;
-            const x1 = from.x + NODE_W;
-            const y1 = from.y + NODE_H / 2;
-            const x2 = to.x;
-            const y2 = to.y + NODE_H / 2;
-            const mid = (x1 + x2) / 2;
-            return (
-              <path
-                key={edge.id}
-                className="oc-edge"
-                d={`M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`}
-                markerEnd="url(#oc-arrow)"
-              />
-            );
-          })}
-        </svg>
-        {flow.nodes.map(node => {
-          const agent = AGENT_BY_ID.get(node.agentId);
-          return (
-            <div
-              key={node.id}
-              className="oc-canvas-node"
-              style={{ left: node.x, top: node.y, width: NODE_W, height: NODE_H, "--accent": agent?.accent || "#8bd3ff" }}
-              title={agent?.responsibility}
-            >
-              <span className="oc-canvas-node-title">{agent?.title}</span>
-              <span className="oc-canvas-node-id">{agent?.id}</span>
-            </div>
-          );
-        })}
-      </div>
-      {!flow.nodes.length && <div className="oc-canvas-empty">画布空白 · 对话添加第一个节点</div>}
-    </div>
+    <g aria-hidden>
+      <defs>
+        <marker id="oc-overlay-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6 Z" fill="rgba(139,211,255,0.85)" />
+        </marker>
+      </defs>
+      {edges.map(edge => (
+        <path key={edge.id} className="oc-overlay-edge" d={edge.path} markerEnd="url(#oc-overlay-arrow)" />
+      ))}
+      {nodes.map(node => {
+        const agent = AGENT_BY_ID.get(node.agentId);
+        const accent = agent?.accent || "#8bd3ff";
+        return (
+          <g key={node.id} transform={`translate(${node.x} ${node.y})`}>
+            <rect className="oc-overlay-node" width={node.w} height={node.h} rx="10" style={{ stroke: accent }} />
+            <text className="oc-overlay-node-title" x="12" y="25">
+              {agent?.title || node.agentId}
+            </text>
+            <text className="oc-overlay-node-id" x="12" y="42">
+              {agent?.id || node.agentId}
+            </text>
+          </g>
+        );
+      })}
+    </g>
   );
 }
 
-// 手动画布底部操作坞按钮（仅手动模式出现，本轮功能轻量、视觉就位）。
-function OcDockButton({ active, disabled, label, icon, onClick }) {
-  return (
-    <button
-      type="button"
-      className={`oc-dock-btn ${active ? "active" : ""}`}
-      disabled={disabled}
-      onClick={onClick}
-      title={label}
-    >
-      <span className="oc-dock-icon">{icon}</span>
-      <em>{label}</em>
-    </button>
-  );
-}
-
-export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task, mode, onModeChange }) {
+export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task, mode, onModeChange, onGenerateImage }) {
   const [idea, setIdea] = useState("给露营灯做一组小红书种草笔记");
-  const [tool, setTool] = useState("select"); // 手动画布操作坞的本地视觉态（选择/抓手），本轮不驱动真实手势
   const [flow, setFlow] = useState(() => createFlow("auto"));
   const [route, setRoute] = useState(null); // {rationale, matchedSkill, summary, brief}
   const [revealCount, setRevealCount] = useState(0); // 自动模式逐节点点亮
@@ -301,6 +263,12 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
   const validity = useMemo(() => validateFlow(flow), [flow]);
   const orderedIds = orderedAgentIds(flow);
 
+  // 手动画布「导入本次封面」数据源：本次任务已出图的 variant 封面（与 /canvas 同口径，保体验一致）。
+  const canvasCovers = useMemo(
+    () => (task?.variants || []).filter(variant => variant.imageUrl).map(variant => ({ src: variant.imageUrl, name: variant.name })),
+    [task]
+  );
+
   // 切换模式重置编排上下文，避免线性链与 DAG 互相污染。
   // mode 受控于 Workbench（上提以便外层按模式重排布局），此处只回调 + 重置本组件内部态。
   function switchMode(nextMode) {
@@ -310,12 +278,6 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
     setRoute(null);
     setPhase(params.skillId ? "ready" : "idle");
     setRevealCount(params.skillId ? Infinity : 0);
-    setTool("select");
-  }
-
-  // 操作坞「添加」：手动模式经对话增删节点，故按钮聚焦对话框引导（本轮轻量功能）。
-  function focusChat() {
-    chatInputRef.current?.focus();
   }
 
   // 中枢路由：auto/semi 共用。auto 走点亮动画后自动运行；semi 停在可编辑态。
@@ -688,18 +650,25 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
             </div>
           </div>
 
+          {/* 统一画布：复用真画布运行时（CanvasStudio）作底座 —— 自带 RoboNeo 添加菜单 /
+              选择/抓手/撤销/重做 + 缩放/适应/图层；Director 流程作只读 overlay 叠加、随画布缩放。
+              手动画布独立 storageKey，与 /canvas 画布互不串。 */}
           <div className="oc-manual-stage">
-            <FlowCanvas flow={flow} />
-            {isVideoFlow(flow) ? null : <p className="oc-future">🎬 视频节点 · 未来支持</p>}
-            {/* 手动专属底部操作坞：仅手动模式出现，作为画布操作栏归位（本轮功能轻量）*/}
-            <div className="oc-canvas-dock" role="toolbar" aria-label="画布操作">
-              <OcDockButton active={tool === "select"} label="选择" icon="⌖" onClick={() => setTool("select")} />
-              <OcDockButton active={tool === "hand"} label="抓手" icon="✋" onClick={() => setTool("hand")} />
-              <OcDockButton label="添加" icon="＋" onClick={focusChat} />
-              <i className="oc-dock-sep" />
-              <OcDockButton label="撤销" icon="↶" disabled />
-              <OcDockButton label="重做" icon="↷" disabled />
-            </div>
+            <CanvasStudio
+              className="is-embedded"
+              storageKey="aicrew-manual-canvas-v1"
+              overlay={<FlowOverlay flow={flow} />}
+              onGenerateImage={onGenerateImage}
+              covers={canvasCovers}
+              emptyHint={
+                flow.nodes.length ? null : (
+                  <>
+                    <strong>画布空白</strong>
+                    <span>对话添加流程节点，或点「添加」插入图片 / 形状</span>
+                  </>
+                )
+              }
+            />
           </div>
         </div>
       </section>

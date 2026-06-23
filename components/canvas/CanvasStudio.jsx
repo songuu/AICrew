@@ -62,9 +62,9 @@ const CLICK_SIZE = {
   arrow: { width: 160, height: 0 }
 };
 
-function loadScene() {
+function loadScene(storageKey) {
   try {
-    const raw = window.localStorage.getItem(CANVAS_STORAGE_KEY);
+    const raw = window.localStorage.getItem(storageKey);
     if (!raw) return createScene();
     const parsed = JSON.parse(raw);
     // 复原边界防御：丢弃损坏/被篡改的非法图元，避免下游 hitTest/render 崩溃。
@@ -83,7 +83,19 @@ const IMPORT_ACCEPT = {
 
 // onGenerateImage(prompt) -> Promise<imageUrl>：AI 能力由组件层注入，lib/canvas/* 保持零依赖 ai。
 // covers：本次任务的封面图 [{src, name}]，供「导入封面」一键铺入。
-export function CanvasStudio({ onGenerateImage, covers = [] }) {
+// 复用契约（统一画布）：
+//   storageKey 让同一运行时承载多个独立画布（/canvas 与手动导演台各自一份，互不串）。
+//   overlay    为渲染于世界变换组内、随 pan/zoom 缩放的只读 SVG（如 Director 流程节点）。
+//   emptyHint  覆盖空态文案：传 ReactNode 自定义、传 null 抑制、不传走默认。
+//   className  透传根节点，供嵌入场景（手动 stage）改写尺寸布局。
+export function CanvasStudio({
+  onGenerateImage,
+  covers = [],
+  storageKey = CANVAS_STORAGE_KEY,
+  overlay = null,
+  emptyHint,
+  className = ""
+}) {
   const [history, setHistory] = useState(() => createHistory(createScene()));
   const [viewport, setViewport] = useState(() => createViewport());
   const [tool, setTool] = useState(TOOL.SELECT);
@@ -108,20 +120,20 @@ export function CanvasStudio({ onGenerateImage, covers = [] }) {
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
 
-  // 载入持久化场景。
+  // 载入持久化场景。storageKey 变更（切换承载画布）时重载，避免串场景。
   useEffect(() => {
-    setHistory(createHistory(loadScene()));
-  }, []);
+    setHistory(createHistory(loadScene(storageKey)));
+  }, [storageKey]);
 
   // 仅持久化已提交现态（视口/draft 不入存储）。配额溢出降级并提示用户（不静默丢失）。
   useEffect(() => {
     try {
-      window.localStorage.setItem(CANVAS_STORAGE_KEY, JSON.stringify(history.present));
+      window.localStorage.setItem(storageKey, JSON.stringify(history.present));
     } catch {
       // 内存态不受影响，仅本次未落盘；告知用户避免误以为已保存。
       setNotice("存储空间不足，本次改动未能本地保存（画布仍可继续编辑，建议删减大图）。");
     }
-  }, [history.present]);
+  }, [history.present, storageKey]);
 
   // 添加菜单：点击菜单外部自动关闭（RoboNeo popover 约定）。
   useEffect(() => {
@@ -509,7 +521,7 @@ export function CanvasStudio({ onGenerateImage, covers = [] }) {
   const zoomPercent = Math.round(viewport.zoom * 100);
 
   return (
-    <div className="canvas-view">
+    <div className={`canvas-view ${className}`.trim()}>
       <input ref={fileRef} type="file" hidden onChange={onFileChange} aria-hidden="true" />
 
       <svg
@@ -533,6 +545,13 @@ export function CanvasStudio({ onGenerateImage, covers = [] }) {
         </defs>
         <rect className="canvas-bg" x="0" y="0" width="100%" height="100%" fill="url(#canvas-grid)" />
         <g transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.zoom})`}>
+          {/* 只读 overlay（如 Director 流程节点）：渲染于对象之下、随视口缩放、不拦截指针，
+              使画布的选择/绘制手势可穿透落到空白处。 */}
+          {overlay && (
+            <g className="canvas-overlay" style={{ pointerEvents: "none" }}>
+              {overlay}
+            </g>
+          )}
           {scene.objects.map(obj => (
             <CanvasObject key={obj.id} obj={obj} />
           ))}
@@ -540,10 +559,14 @@ export function CanvasStudio({ onGenerateImage, covers = [] }) {
         </g>
       </svg>
 
-      {scene.objects.length === 0 && (
+      {scene.objects.length === 0 && emptyHint !== null && (
         <div className="canvas-empty">
-          <strong>空白画布</strong>
-          <span>点「添加」插入图元/图片，或按 R/O/T/A 直接绘制</span>
+          {emptyHint || (
+            <>
+              <strong>空白画布</strong>
+              <span>点「添加」插入图元/图片，或按 R/O/T/A 直接绘制</span>
+            </>
+          )}
         </div>
       )}
 

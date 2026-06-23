@@ -23,6 +23,7 @@ import { routeIdeaToFlow } from "../lib/flow/router.js";
 import { parseDirectorCommand, matchAgentInText } from "../lib/flow/director.js";
 import { runFlow, runFlowWithAI, flowToAiModes } from "../lib/flow/execute.js";
 import { runCreativeWorkflow, runCreativeWorkflowWithSkill, findSkill } from "../lib/domain.js";
+import { computeFlowOverlay, FLOW_NODE_W, FLOW_NODE_H } from "../lib/flow/overlay.js";
 
 function makeAiFetch() {
   const calls = [];
@@ -372,4 +373,58 @@ test("sanitizeFlow drops corrupt nodes and dangling edges", () => {
   assert.equal(clean.nodes.length, 1);
   assert.equal(clean.edges.length, 0, "指向已删节点的 edge 全部清除");
   assert.equal(sanitizeFlow({ mode: "bogus" }), null);
+});
+
+// —— Director 画布 overlay 几何（统一画布） ——
+
+test("computeFlowOverlay maps nodes with default box size and preserves coords", () => {
+  const flow = {
+    nodes: [
+      { id: "n1", agentId: "brief", x: 80, y: 120 },
+      { id: "n2", agentId: "qa", x: 280, y: 120 }
+    ],
+    edges: []
+  };
+  const overlay = computeFlowOverlay(flow);
+  assert.equal(overlay.isEmpty, false);
+  assert.equal(overlay.nodes.length, 2);
+  assert.deepEqual(overlay.nodes[0], { id: "n1", agentId: "brief", x: 80, y: 120, w: FLOW_NODE_W, h: FLOW_NODE_H });
+});
+
+test("computeFlowOverlay derives edge endpoints from source-right to target-left mid", () => {
+  const flow = {
+    nodes: [
+      { id: "n1", agentId: "brief", x: 80, y: 120 },
+      { id: "n2", agentId: "qa", x: 280, y: 200 }
+    ],
+    edges: [{ id: "e1", from: "n1", to: "n2" }]
+  };
+  const { edges } = computeFlowOverlay(flow);
+  assert.equal(edges.length, 1);
+  assert.equal(edges[0].x1, 80 + FLOW_NODE_W, "源节点右缘");
+  assert.equal(edges[0].y1, 120 + FLOW_NODE_H / 2, "源节点垂直中点");
+  assert.equal(edges[0].x2, 280, "目标节点左缘");
+  assert.equal(edges[0].y2, 200 + FLOW_NODE_H / 2, "目标节点垂直中点");
+  assert.match(edges[0].path, /^M /, "提供可直接渲染的 bezier path");
+});
+
+test("computeFlowOverlay drops edges whose endpoints are missing", () => {
+  const flow = {
+    nodes: [{ id: "n1", agentId: "brief", x: 0, y: 0 }],
+    edges: [{ id: "e1", from: "n1", to: "ghost" }]
+  };
+  assert.equal(computeFlowOverlay(flow).edges.length, 0);
+});
+
+test("computeFlowOverlay treats empty / nullish flow as empty without throwing", () => {
+  assert.equal(computeFlowOverlay({ nodes: [], edges: [] }).isEmpty, true);
+  assert.equal(computeFlowOverlay(null).isEmpty, true);
+  assert.deepEqual(computeFlowOverlay(undefined).edges, []);
+});
+
+test("computeFlowOverlay honors custom node dimensions", () => {
+  const flow = { nodes: [{ id: "n1", agentId: "brief", x: 10, y: 10 }], edges: [] };
+  const overlay = computeFlowOverlay(flow, { nodeWidth: 200, nodeHeight: 80 });
+  assert.equal(overlay.nodes[0].w, 200);
+  assert.equal(overlay.nodes[0].h, 80);
 });
