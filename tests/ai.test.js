@@ -550,3 +550,44 @@ test("a flow-composed skill without bestFor does not inject a skill clause", asy
   assert.ok(textPrompts.every(prompt => !prompt.includes("创作技能")));
   assert.ok(imagePrompts.every(prompt => !prompt.includes("创作技能")));
 });
+
+// ---- copy engine upgrade: prompt carries hook frameworks + platform rules + pain inference ----
+test("copy prompt injects platform hook frameworks, copy rules, and pain inference", async () => {
+  const textPrompts = [];
+  const { fetchImpl } = makeFetch(promptCaptureRouter(textPrompts, []));
+  await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+  assert.ok(textPrompts.length > 0);
+  assert.ok(textPrompts.every(prompt => prompt.includes("框架")), "every copy prompt should carry hook frameworks");
+  assert.ok(textPrompts.every(prompt => prompt.includes("文案规范")), "every copy prompt should carry platform copy rules");
+  assert.ok(textPrompts.every(prompt => prompt.includes("痛点推断")), "every copy prompt should request pain inference");
+});
+
+test("Hook Lab (hook node) adds a multi-candidate hook instruction; non-hook skills don't", async () => {
+  const hookPrompts = [];
+  const plainPrompts = [];
+  const { fetchImpl: hookFetch } = makeFetch(promptCaptureRouter(hookPrompts, []));
+  await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "hook_lab_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl: hookFetch
+  });
+  const { fetchImpl: plainFetch } = makeFetch(promptCaptureRouter(plainPrompts, []));
+  await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl: plainFetch
+  });
+  assert.ok(hookPrompts.length > 0 && plainPrompts.length > 0);
+  assert.ok(hookPrompts.every(prompt => prompt.includes("候选钩子")), "Hook Lab prompt should request candidate hooks");
+  assert.ok(plainPrompts.every(prompt => !prompt.includes("候选钩子")), "non-hook skill must not get the Hook Lab instruction");
+});

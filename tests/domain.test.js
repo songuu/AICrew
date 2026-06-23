@@ -9,6 +9,8 @@ import {
   defaultBrandKit,
   estimateCredits,
   findSkill,
+  findPlatformPreset,
+  scoreHookStrength,
   mergeCreativeParams,
   normalizeBrief,
   orchestratorAgent,
@@ -327,6 +329,78 @@ test("buildExportFiles cover source toggles with variant.imageUrl", () => {
 
   const withImage = buildExportFiles({ brief, variant: { ...base, imageUrl: "data:image/png;base64,X" }, skill });
   assert.equal(withImage.find(file => file.name === "cover.png").source, "variantImage");
+});
+
+// ---- copy engine upgrade: platform DNA + 真打分 hookStrength ----
+test("active platform presets carry structured copy DNA (hookPatterns + copyRules)", () => {
+  for (const id of ["抖音", "小红书"]) {
+    const preset = findPlatformPreset(id);
+    assert.ok(Array.isArray(preset.hookPatterns) && preset.hookPatterns.length >= 2, `${id} missing hookPatterns`);
+    assert.ok(preset.copyRules && preset.copyRules.hookMaxChars > 0, `${id} missing copyRules.hookMaxChars`);
+    assert.ok(Array.isArray(preset.copyRules.ctaExamples) && preset.copyRules.ctaExamples.length > 0, `${id} missing ctaExamples`);
+  }
+});
+
+test("scoreHookStrength is a real signal: empty=0, plain>=80, feature-rich scores higher, capped 99", () => {
+  const preset = findPlatformPreset("抖音");
+  assert.equal(scoreHookStrength("", preset), 0);
+  assert.equal(scoreHookStrength("   ", preset), 0);
+
+  const plain = scoreHookStrength("这是一个普通的产品介绍文字内容没有任何钩子特征在里面", preset);
+  assert.ok(plain >= 80, `plain non-empty hook should floor at 80, got ${plain}`);
+
+  // 含数字 + 问句 + 痛点 + 紧迫词 → 明显高于平铺
+  const strong = scoreHookStrength("还在为3个老问题头疼？现在马上解决", preset);
+  assert.ok(strong > plain, `feature-rich hook (${strong}) should beat plain (${plain})`);
+  assert.ok(strong <= 99, `score must cap at 99, got ${strong}`);
+});
+
+test("hookStrength flows into variant metrics and keeps qa overallScore >= 80", () => {
+  const task = runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "NovaGlow Lamp", platform: "抖音" }),
+    skillId: "ecom_tiktok_product_ad_v1",
+    brandKit: defaultBrandKit
+  });
+  // 角度被改写为带框架的钩子 → hookStrength 应 >= 80（不再是占位 82+index 的恒定值）
+  assert.ok(task.variants.every(variant => variant.metrics.hookStrength >= 80));
+  assert.ok(task.qa.overallScore >= 80);
+});
+
+// ---- new hook agent + Hook Lab skill ----
+test("catalog exposes the new hook (Hook Lab) agent with full contract", () => {
+  const hook = agents.find(agent => agent.id === "hook");
+  assert.ok(hook, "hook agent missing from catalog");
+  assert.ok(hook.responsibility && hook.input && hook.output && hook.evaluation);
+  assert.ok(hook.cost > 0 && hook.tools.length >= 2);
+});
+
+test("Hook Lab skill is featured, image-first, and orchestrates the hook agent", () => {
+  const hookLab = skills.find(skill => skill.id === "hook_lab_v1");
+  assert.ok(hookLab, "hook_lab_v1 skill missing");
+  assert.equal(hookLab.featured, true);
+  assert.ok(hookLab.agents.includes("hook"));
+  assert.ok(!hookLab.agents.includes("video"), "Hook Lab must be image-first (no video)");
+
+  const task = runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "hook_lab_v1",
+    brandKit: defaultBrandKit
+  });
+  assert.equal(task.skillName, "Hook Lab 爆款钩子");
+  assert.equal(task.credits.video, 0);
+  assert.ok(!task.exports[0].fileNames.includes("video.mp4"));
+  assert.ok(task.qa.overallScore >= 80);
+});
+
+test("deterministic fallback CTA is platform-native (zh), not English boilerplate", () => {
+  const task = runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "NovaGlow Lamp", platform: "抖音" }),
+    skillId: "ecom_tiktok_product_ad_v1",
+    brandKit: defaultBrandKit
+  });
+  const ctas = task.variants.map(variant => variant.cta).join(" ");
+  assert.ok(!/Shop the drop|Save this setup|Try the launch kit/.test(ctas), "English boilerplate CTA leaked");
+  assert.ok(/[一-龥]/.test(ctas), "CTA should contain Chinese");
 });
 
 test("buildExportFiles keeps video.mp4 a placeholder (no binary this sprint)", () => {
