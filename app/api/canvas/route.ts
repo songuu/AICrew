@@ -1,6 +1,6 @@
 // 无限画布文档 API：单例文档 doc_type='canvas'。GET 读、PUT upsert。替代 CanvasStudio 的 localStorage。
 import { json, DB_UNCONFIGURED_MESSAGE, INTERNAL_ERROR_MESSAGE } from "../../../lib/db/http.js";
-import { isDbConfigured, resolveWorkspaceId } from "../../../lib/db/client.js";
+import { isDbConfigured, resolveWorkspaceId, withDbRetry } from "../../../lib/db/client.js";
 import { loadDocument, saveDocument, canvasDocType } from "../../../lib/db/repositories/documents.js";
 
 export const dynamic = "force-dynamic";
@@ -16,7 +16,7 @@ function canvasTypeFrom(request: Request): string {
 export async function GET(request: Request) {
   if (!isDbConfigured()) return json({ error: DB_UNCONFIGURED_MESSAGE }, 503);
   try {
-    const canvas = await loadDocument(canvasTypeFrom(request), resolveWorkspaceId(request));
+    const canvas = await withDbRetry(() => loadDocument(canvasTypeFrom(request), resolveWorkspaceId(request)));
     return json({ canvas });
   } catch {
     return json({ error: INTERNAL_ERROR_MESSAGE }, 500);
@@ -32,7 +32,7 @@ export async function PUT(request: Request) {
     return json({ error: "请求 JSON 无效" }, 400);
   }
   try {
-    await saveDocument(canvasTypeFrom(request), body?.canvas ?? body, resolveWorkspaceId(request));
+    await withDbRetry(() => saveDocument(canvasTypeFrom(request), body?.canvas ?? body, resolveWorkspaceId(request)));
     return json({ ok: true });
   } catch {
     return json({ error: INTERNAL_ERROR_MESSAGE }, 500);

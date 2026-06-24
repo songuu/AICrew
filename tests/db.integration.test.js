@@ -8,12 +8,14 @@ import assert from "node:assert/strict";
 const hasDb = typeof process.env.SUPABASE_DB_URL === "string" && process.env.SUPABASE_DB_URL.trim().length > 0;
 
 test("Supabase 数据层往返", { skip: hasDb ? false : "SUPABASE_DB_URL 未配置，跳过集成测试" }, async t => {
-  const { getSql, closeSql } = await import("../lib/db/client.js");
+  const { getSql, closeSql, withDbRetry } = await import("../lib/db/client.js");
   const { saveStateSnapshot, loadStateSnapshot } = await import("../lib/db/repositories/state.js");
   const { saveAssets, loadAssets } = await import("../lib/db/repositories/assets.js");
   const { saveDocument, loadDocument } = await import("../lib/db/repositories/documents.js");
 
   const sql = getSql();
+  // 预热连接（火山 DB 冷连抖动；带重试）。预热后 idle_timeout:0 保活，后续复用单连接。
+  await withDbRetry(() => sql`select 1`);
   const workspaceId = `test-${process.pid}-${Date.now()}`;
 
   t.after(async () => {
@@ -99,9 +101,10 @@ test("Supabase 数据层往返", { skip: hasDb ? false : "SUPABASE_DB_URL 未配
 
 // 回归：集合表复合主键 (workspace_id, id)。两个 workspace 写入相同 id 不得撞键/回滚（评审 A 项）。
 test("跨 workspace 同名 id 互不冲突（复合主键隔离）", { skip: hasDb ? false : "SUPABASE_DB_URL 未配置" }, async t => {
-  const { getSql, closeSql } = await import("../lib/db/client.js");
+  const { getSql, closeSql, withDbRetry } = await import("../lib/db/client.js");
   const { saveStateSnapshot, loadStateSnapshot } = await import("../lib/db/repositories/state.js");
   const sql = getSql();
+  await withDbRetry(() => sql`select 1`); // 预热连接（火山 DB 冷连抖动；带重试）
   const wsA = `test-pk-a-${process.pid}-${Date.now()}`;
   const wsB = `test-pk-b-${process.pid}-${Date.now()}`;
 
