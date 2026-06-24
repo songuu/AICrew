@@ -651,3 +651,21 @@ test("new platforms drive the full pipeline via findPlatformPreset (ratio + qa, 
     assert.ok(task.credits.estimated > 0);
   }
 });
+
+// ---- 文案 i18n：platform preset.lang ----
+test("platform presets declare lang (zh for 抖音/小红书, en for Western); en CTA is English", () => {
+  const byId = Object.fromEntries(platformPresets.map(p => [p.id, p]));
+  assert.equal(byId.tiktok.lang, "zh");
+  assert.equal(byId.rednote.lang, "zh");
+  assert.equal(byId.reels.lang, "en");
+  assert.equal(byId.shorts.lang, "en");
+  assert.equal(byId.shopify.lang, "en");
+  // en 平台 CTA 范例为英文（单源：prompt 示例 + 确定性兜底 CTA 同步）；zh 平台仍中文
+  const hasCJK = s => /[一-鿿]/.test(s);
+  for (const id of ["reels", "shorts", "shopify"]) {
+    assert.ok(byId[id].copyRules.ctaExamples.every(c => !hasCJK(c)), `${id} CTA examples should be English`);
+  }
+  for (const id of ["tiktok", "rednote"]) {
+    assert.ok(byId[id].copyRules.ctaExamples.every(c => hasCJK(c)), `${id} CTA examples should stay Chinese`);
+  }
+});

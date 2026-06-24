@@ -690,6 +690,44 @@ test("a new platform (YouTube Shorts) injects its own DNA into the copy prompt",
   // hook 指引头部携带平台名 + 该平台 hookSeconds（5s），证明 preset 真实驱动而非硬编码
   assert.ok(prompts.every(p => p.includes("YouTube Shorts")), "prompt should carry the platform name");
   assert.ok(prompts.every(p => p.includes("5 秒")), "prompt should carry YouTube Shorts hookSeconds");
-  // 该平台专属 CTA 范例进入文案规范
-  assert.ok(prompts.every(p => p.includes("关注看完整教程")), "prompt should carry the platform-native CTA example");
+  // 该平台专属 CTA 范例进入文案规范（i18n 后为英文）
+  assert.ok(prompts.every(p => p.includes("Subscribe for the full guide")), "prompt should carry the platform-native CTA example");
+});
+
+// ---- 文案 i18n：Western 平台走英文 copy system + 英文输出指令；zh 平台不变 ----
+function captureBodies(bodies) {
+  return (url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.mode === "image") return jsonResponse({ imageUrl: "data:image/png;base64,IMG" });
+    bodies.push(body);
+    return jsonResponse({ text: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) });
+  };
+}
+
+test("Western platform (en) uses English copy system + English output directive; zh unchanged", async () => {
+  const en = [];
+  const { fetchImpl: enFetch } = makeFetch(captureBodies(en));
+  await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "Portable light", platform: "YouTube Shorts", targetAudience: "creators" }),
+    skillId: "ecom_tiktok_product_ad_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl: enFetch
+  });
+  assert.ok(en.length > 0);
+  assert.ok(en.every(b => b.system.includes("viral copywriter")), "en platform should use the English copy system");
+  assert.ok(en.every(b => b.prompt.includes("native English")), "en platform prompt should carry the English output directive");
+
+  const zh = [];
+  const { fetchImpl: zhFetch } = makeFetch(captureBodies(zh));
+  await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl: zhFetch
+  });
+  assert.ok(zh.length > 0);
+  assert.ok(zh.every(b => b.system.includes("操盘手")), "zh platform should keep the Chinese copy system");
+  assert.ok(zh.every(b => !b.prompt.includes("native English")), "zh platform must not get the English directive");
 });
