@@ -1,0 +1,17 @@
+services:
+  aicrew-studio:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_BASE_PATH: ${NEXT_PUBLIC_BASE_PATH:-/aicrew}
+    image: aicrew-studio:local
+    ports:
+      - "${AICREW_CONTAINER_PORT:-3101}:3000"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      AICREW_HOST: 0.0.0.0
+      NEXT_PUBLIC_BASE_PATH: ${NEXT_PUBLIC_BASE_PATH:-/aicrew}
+    restart: unless-stopped

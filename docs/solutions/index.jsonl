@@ -1,0 +1,1 @@
+{"summary":"为 AICrew 增加 Next server runtime 容器化入口，同时保持 secret 运行时注入和现有 PM2/Nginx 发布链路。","title":"AICrew 容器化部署入口","date":"2026-06-24","tags":["solution","deployment","container","nextjs"],"path":"docs/solutions/2026-06-24-containerized-deployment.md"}

@@ -89,6 +89,69 @@ pwsh scripts/deploy-server.ps1
 - `current-server` 指向新 release 后，PM2 重启 `aicrew-studio`，Next server 直接从服务器 `.env` 读取配置。
 - 验证会检查 `/aicrew/api/ai/config` 返回 `configured: true`，确认部署后可直接使用系统 AI。
 
+## 容器化部署（云迁移入口）
+
+容器化路线用于后续云服务一键迁移。当前生产仍保留 `scripts/deploy-server.ps1` + PM2/Nginx；容器镜像提供等价的 Next server runtime，不承载旧静态 `out/` 发布。
+
+### 构建镜像
+
+```powershell
+docker build --build-arg NEXT_PUBLIC_BASE_PATH=/aicrew -t aicrew-studio:local .
+```
+
+约束：
+
+- `NEXT_PUBLIC_BASE_PATH` 是构建期公共变量，默认 `/aicrew`。如果云端入口要改成其他子路径，需要用新 base path 重新构建镜像。
+- 不要通过 `--build-arg` 注入 `AICREW_AI_API_KEY`、`AICREW_AI_BASE_URL` 或其他 secret。`.dockerignore` 已排除 `.env*`，真实密钥只能在容器运行时注入。
+- 镜像运行 `npm start`，保持 Next server runtime；不设置 `AICREW_STATIC_EXPORT=1`。
+- 如需检查 Compose 结构，使用 `docker compose config --no-interpolate`。普通 `docker compose config` 会展开 `env_file`，不要把输出贴到日志或工单。
+
+### 本地运行
+
+使用 Compose：
+
+```powershell
+docker compose up --build
+```
+
+或直接运行镜像：
+
+```powershell
+docker run --rm --env-file .env -e NEXT_PUBLIC_BASE_PATH=/aicrew -e PORT=3000 -p 3101:3000 aicrew-studio:local
+```
+
+验证：
+
+```powershell
+curl.exe -f http://127.0.0.1:3101/aicrew/
+curl.exe -f http://127.0.0.1:3101/aicrew/api/ai/config/
+```
+
+`/aicrew/api/ai/config/` 在没有真实 AI 环境变量时可以返回 `configured: false`，但路由必须可访问；生产迁移验收需配置 `AICREW_AI_BASE_URL`、`AICREW_AI_API_KEY`、`AICREW_AI_TEXT_MODEL` 后确认 `configured: true`。
+
+### 云服务迁移 checklist
+
+1. 构建镜像时固定目标 public base path：默认 `NEXT_PUBLIC_BASE_PATH=/aicrew`。
+2. 在云平台运行时环境变量中配置 AI env，不把 `.env` 打进镜像。
+3. 容器端口使用 `3000`，平台或反代把外部 `/aicrew/` 转发到容器。
+4. 若沿用 Nginx，反代目标改为容器内网地址或宿主映射端口，路径仍保持 `/aicrew/`。
+5. 发布后验证 `/aicrew/`、`/aicrew/api/ai/config/`，真实生产还需确认 `configured: true`。
+
+Nginx 反代示例（容器映射到宿主 `127.0.0.1:3101` 时）：
+
+```nginx
+location = /aicrew {
+  return 301 /aicrew/;
+}
+
+location /aicrew/ {
+  proxy_pass http://127.0.0.1:3101/aicrew/;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
 ## 运行
 
 ```bash

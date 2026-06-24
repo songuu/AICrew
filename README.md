@@ -121,6 +121,36 @@ The script requires the project root `.env`, packages it into the server release
 
 The older static `out/` deploy flow only works for preview/static mode and cannot serve the AI API routes.
 
+## Container Deployment
+
+AICrew can also run as a containerized Next server runtime for cloud migration scenarios. This does not replace the current PM2/Nginx production path; it gives the same app runtime an image-based entrypoint.
+
+Build:
+
+```bash
+docker build --build-arg NEXT_PUBLIC_BASE_PATH=/aicrew -t aicrew-studio:local .
+```
+
+Run with Compose:
+
+```bash
+docker compose up --build
+```
+
+Or run the image directly:
+
+```bash
+docker run --rm --env-file .env -e NEXT_PUBLIC_BASE_PATH=/aicrew -e PORT=3000 -p 3101:3000 aicrew-studio:local
+```
+
+Open:
+
+```text
+http://127.0.0.1:3101/aicrew/
+```
+
+Runtime AI settings still come from server environment variables. Do not pass `AICREW_AI_API_KEY` or other secrets as Docker build args. If a cloud service uses a different public path than `/aicrew`, rebuild the image with the matching `NEXT_PUBLIC_BASE_PATH`.
+
 ## Product Scope
 
 - Landing/dashboard console
