@@ -11,6 +11,7 @@ import {
   modelRoutes,
   normalizeBrief,
   parseBriefText,
+  reconcileInterruptedTasks,
   reviseVariantHook,
   retryAgentStep,
   runCreativeWorkflow,
@@ -306,7 +307,8 @@ export function AICrewStudio({ initialView = "dashboard" }) {
       }
 
       if (!alive) return;
-      const nextState = { ...baseState, brandKit };
+      // 启动调和：被 reload 打断的孤儿 running/queued task → failed-interrupted，避免永久卡「运行中」。
+      const nextState = reconcileInterruptedTasks({ ...baseState, brandKit });
       setState(nextState);
       setSelectedVariantId(nextState.tasks?.[0]?.variants?.[0]?.id || null);
     })();
@@ -612,7 +614,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
 
   function exportVariant() {
     if (!project || !activeVariant) return;
-    const record = buildExportRecord(project, activeVariant, task?.brief.platform || "抖音");
+    const record = buildExportRecord(project, activeVariant, task?.brief.platform || "抖音", { brief: task?.brief, taskArtifacts: task?.artifacts });
     setState(current => ({
       ...current,
       exports: [record, ...current.exports]
@@ -1082,7 +1084,7 @@ function Projects({ state, task, navigate }) {
                 </span>
               </div>
               <div className={`score-badge ${qualityTone(project.qualityScore)}`}>{project.qualityScore}</div>
-              <span className="status-chip">{project.status}</span>
+              <span className={"status-chip status-chip--" + project.status}>{statusLabel(project.status)}</span>
             </article>
           ))}
         </div>
@@ -1610,6 +1612,11 @@ function Metric({ label, value, caption }) {
   );
 }
 
+const TASK_STATUS_LABELS = { queued: "排队中", running: "运行中", completed: "已完成", failed: "失败" };
+function statusLabel(status) {
+  return TASK_STATUS_LABELS[status] || status || "";
+}
+
 function AgentTimeline({ task, onRetry }) {
   if (!task) return <p className="empty-state">No active task</p>;
   const recentEvents = (task.events || []).slice(-4).reverse();
@@ -1633,15 +1640,19 @@ function AgentTimeline({ task, onRetry }) {
               <div className="agent-step-head">
                 <div>
                   <strong>{agent.title}</strong>
-                  <em>{agent.duration}{agent.retryCount ? " · retried " + agent.retryCount : ""}</em>
+                  <em>{agent.duration || ""}{agent.retryCount ? " · retried " + agent.retryCount : ""}</em>
                 </div>
-                {onRetry && (
-                  <button className="ghost-button slim" type="button" onClick={() => onRetry(agent.id)}>
-                    Retry
-                  </button>
-                )}
+                <div className="agent-step-actions">
+                  <span className={"agent-status agent-status--" + agent.status}>{statusLabel(agent.status)}</span>
+                  {onRetry && agent.status === "failed" && (
+                    <button className="ghost-button slim" type="button" onClick={() => onRetry(agent.id)}>
+                      Retry
+                    </button>
+                  )}
+                </div>
               </div>
-              <p>{agent.summary}</p>
+              {agent.error && <p className="agent-error">⚠ {agent.error}</p>}
+              {agent.summary && <p>{agent.summary}</p>}
               <details className="agent-details">
                 <summary>查看输入 / 工具 / 评价</summary>
                 <dl>
@@ -1807,7 +1818,7 @@ function TaskTable({ tasks }) {
               {task.skillName} · {formatDate(task.updatedAt)}
             </span>
           </div>
-          <span className="status-chip">{task.status}</span>
+          <span className={"status-chip status-chip--" + task.status}>{statusLabel(task.status)}</span>
           <strong>{task.credits.actual}</strong>
         </article>
       ))}

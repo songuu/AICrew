@@ -969,6 +969,40 @@ button {
   font-size: 11px;
 }
 
+/* P0-B 执行生命周期四态：agent pill / task·project chip 配色对齐设计系统变量。 */
+.agent-step-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.agent-status {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.agent-status--completed { color: var(--mint); border-color: rgba(69, 224, 198, 0.5); }
+.agent-status--running { color: var(--cyan); border-color: rgba(92, 225, 255, 0.5); }
+.agent-status--failed { color: var(--danger); border-color: rgba(255, 92, 114, 0.5); }
+.agent-status--queued { color: var(--muted); }
+
+.agent-error {
+  color: var(--danger);
+  font-size: 12px;
+  margin: 6px 0 0;
+}
+
+.status-chip--completed { color: var(--mint); border-color: rgba(69, 224, 198, 0.5); }
+.status-chip--running { color: var(--cyan); border-color: rgba(92, 225, 255, 0.5); }
+.status-chip--failed { color: var(--danger); border-color: rgba(255, 92, 114, 0.5); }
+.status-chip--queued { color: var(--muted); }
+
 .agent-details {
   margin-top: 10px;
   border-top: 1px solid var(--line-soft);

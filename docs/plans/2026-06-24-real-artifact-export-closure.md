@@ -9,7 +9,9 @@ tasks_total: 6
 tasks_completed: 6
 tags: [sprint, p0, artifacts, export, ai, roboneo]
 aliases: ["real-artifact-export", "真实图文导出闭环"]
-goal: "把当前 AICrew 的结构化 task、AI 文案和图片结果收敛为真实可交付的图文内容包；视频继续明确 deferred，不伪装成 ready 文件。"`ngoal_status: met`ngoal_iteration: 1
+goal: "把当前 AICrew 的结构化 task、AI 文案和图片结果收敛为真实可交付的图文内容包；视频继续明确 deferred，不伪装成 ready 文件。"
+goal_status: met
+goal_iteration: 1
 invariants:
   - "三模式必须经 Flow -> flowToSkill -> 同一执行管线，避免 auto/semi/manual 三套业务真相。"
   - "视频能力未真实接入前，MP4 只能是 deferred/placeholder，不得作为 ready/downloadable artifact。"
@@ -108,7 +110,7 @@ related:
 
 ## Phase 2.5: 真实代码核验修正（2026-06-24 multi-agent plan review）
 
-> 9-agent recon 把每条 task 对照真实代码核验，4 个 critic lens（架构/风险/完整性/可测性）收敛出以下修正。原计划方向正确，但 task 的 file list 系统性低估爆炸半径，且多条 Success 标准结构上无法断言。以下为开 Work 前的强制修正。
+> 9-agent recon 把每条 task 对照真实代码核验，4 个 critic lens（架构/风险/完整性/可测性）收敛出以下修正。原计划方向正确，但 task 的 file list 系统性低估爆炸半径，且多条 Success 标准结构上无法断言。本 review 与实际执行（commit `351e92e`）并行发生；以下条目作为执行的验收基准，逐条独立核验结果见 **Phase 4.2 独立对抗审计**。
 
 ### 核验出的事实偏差（plan 假设 vs 代码真相）
 
@@ -183,19 +185,21 @@ type ArtifactRef = {
 };
 ```
 
-- 增加 helper：
-  - `createReadyArtifact`
-  - `createFailedArtifact`
-  - `createDeferredArtifact`
-  - `isDownloadableArtifact`
+- 增加 helper（集中在 `lib/artifacts.js`，避免判断散落）：
+  - `createReadyArtifact` / `createFailedArtifact` / `createDeferredArtifact`
+  - `isDownloadableArtifact`（对全部 type×status 组合有确定行为，禁止 default 分支吞掉未知值）
+  - `redactArtifactError`（脱敏 error/provider：剥 URL/key/header、限长、provider→展示名）
+  - `artifactId(ownerId, type, source)`（确定性、跨 reload 稳定、并发不撞，非随机 uuid）
 
 验收：
 
 - `video/mp4` 无真实 URL 时只能是 `deferred`。
-- failed artifact 必须带 error。
-- ready artifact 必须有 `url` 或 `refKey`。
+- failed artifact 必须带 error，且 error 已经过 `redactArtifactError`（注入含假 token 的 error，断言被脱敏）。
+- ready artifact 必须有 `url` 或 `refKey`；**ready image artifact 必须用 refKey，持久化态禁止内联 base64 `data:` url**。
+- 同一 variant 构建两次产出相同 artifact id。
+- `isDownloadableArtifact` 真值表测试覆盖 image/video/text/document × ready/failed/deferred。
 
-风险：L2。领域模型变化，影响 export/task 展示。
+风险：L3（从 L2 上调）。非纯新增：与 record 级 `status:'ready'`（buildExports:1703 + buildExportRecord:1289）冲突，且「ready 必须有 url/refKey」与现状（封面惰性解析、build 时无 url）直接矛盾，需在合同层定义确定性路径封面=deferred。
 
 ### Task 2: Variant 产物转 Artifact
 
@@ -382,7 +386,30 @@ P1 必查：
 - 测试：ready/failed/deferred 的核心路径由 domain/export/ai/imageStore 测试覆盖；DB roundtrip 已跑真实 Supabase。
 - 集成连续性：Flow/domain/AI/export/UI/storage 同步迁移；CanvasStudio 运行时边界未被引入 domain/ai 依赖。
 
-P0/P1：本轮审查未发现阻断项。
+P0/P1：自审未发现阻断项（注：独立对抗审计补充了 1 个 P1 安全 + 3 个质量/覆盖残留，见 **Phase 4.2**）。
+
+## Phase 4.2: 独立对抗审计（2026-06-24, multi-agent）
+
+> 9-agent recon + 7-agent 对抗审计独立核验已提交代码（commit `351e92e`），不轻信 Work Log/自审。结论：结构性 P0 已做实（5/7 closed），自审「P0/P1 未发现阻断项」需修正——存在 1 个 P1 安全残留 + 3 个质量/覆盖残留。`npm test` 实测 103/103 pass（artifact/export/ai/imageStore），迁移属实非凑绿。
+
+### 核验表
+
+| # | 核验项 | 结论 | 证据 / 缺口 |
+|---|---|---|---|
+| 1 | base64 不入持久化（exports+variants 均剥 data: url，保 refKey） | ✅ closed | `stripArtifactsForStorage`(artifacts.js:93-102) 经 `stripVariantMedia`/`stripExportMedia`(AICrewStudio.jsx:164-186)；两个 persist sink(:327/:341/:286)均过 sanitize |
+| 2 | bundle.js 按 status 分桶、视频 deferred 不可下载 | 🟡 partial | kind 过滤已废、视频入 deferred(bundle.js:27-47)；但 downloadable 判定**内联重写**未复用 `isDownloadableArtifact`，两份真相可漂移（ready video 在共享谓词可下载、在 bundle.js 被静默丢） |
+| 3 | 两生产者统一、无硬编码 `status:'ready'` | ✅ closed | grep `status:'ready'` 零命中；buildExports+buildExportRecord 同走 `buildExportFiles`→`exportFileFromArtifact`(domain.js:1837)。残留 P2：on-demand 漏 qa-report.json + 用 minimal brief |
+| 4 | AI 失败落 failed artifact 带 error、imageErrors 带 variantId | ✅ closed | workflow.js:373-385 `createFailedArtifact({error})`；imageErrors 带 variantId |
+| 5 | error/provider 脱敏（落库+导出+渲染） | ✅ **fixed（本会话）** | 原 artifact 路径已脱敏，**但 `aiMeta.error`(workflow.js:515) 与 `aiMeta.imageErrors[].error` 曾携原始 provider 报错**落 localStorage+Supabase；现捕获点(:353)与外层 catch(:515)统一过 `sanitizeArtifactError`，回归测试钉死。`aiMeta.provider` 为 provider 展示名非密钥 |
+| 6 | no-AI 封面 deferred + legacy 兼容 + QA 基数 | ✅ closed | legacy `files: string[]`/无 status 记录不崩(AICrewStudio.jsx:106-109 + bundle.js:5-18)；QA task 级 |
+| 7 | 测试断言迁移到 status（非删旧凑绿） | 🟡 partial | 3 处 pinned 守卫 1→2 断言（video deferred+downloadable=false、cover status+refKey、refKey-not-base64），净断言未减；**但 `failedFiles`/`deferredFiles` 分桶与「failed artifact 带 error」无任何测试覆盖**，可静默回归 |
+
+### 必修/建议残留（自审遗漏）
+
+1. ✅ **P1 安全（已修复，本会话）**：`aiMeta.error` / `aiMeta.imageErrors[].error` 曾把原始 provider 报错未脱敏持久化到 localStorage + Supabase（可能含 `?api_key=`/`Bearer`/`sk-` token）。已在 `lib/ai/workflow.js` 捕获点(:353，覆盖 imageErrors)与外层 catch(:515)套 `sanitizeArtifactError`；新增回归测试「provider error carrying a leaked token is redacted」（RED→GREEN）；全量 `npm test` = 215/213 pass(2 skip)。`aiMeta.provider` 确认为 provider 展示名（非密钥），保留。
+2. **P2 质量**：`assembleExportBundle` 内联重写下载判定，未 import `isDownloadableArtifact` → 两份真相已现潜在漂移。复用单一谓词。
+3. **P2 覆盖**：补 `failedFiles`/`deferredFiles` 分桶 + 「failed variant artifact 带 error」断言，防静默回归。
+4. **P2 一致性**：on-demand `buildExportRecord` 不传 taskArtifacts（漏 qa-report.json）且用 minimal brief；对齐 auto 路径或文档化差异。
 
 ## Phase 5: Compound 预期
 

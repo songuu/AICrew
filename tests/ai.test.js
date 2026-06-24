@@ -18,6 +18,7 @@ import {
 import { generateText, generateImage, generateVideo, testConnection } from "../lib/ai/providers.js";
 import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
 import { runCreativeWorkflow, defaultBrandKit, normalizeBrief } from "../lib/domain.js";
+import { TASK_STATUS } from "../lib/lifecycle.js";
 
 function memStorage() {
   const map = new Map();
@@ -456,6 +457,71 @@ test("a single variant image failure is isolated and recorded in aiMeta", async 
   assert.equal(result.aiMeta.copyApplied, 3);
   assert.equal(result.aiMeta.imageErrors.length, 1);
   assert.equal(result.variants.filter(variant => variant.imageUrl).length, 2);
+});
+
+test("AI total image failure marks the visual agent failed and settles the task failed (copy still applies)", async () => {
+  const failAllImages = (url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.mode === "image") {
+      return jsonResponse({ error: { message: "img upstream 500" } }, { ok: false, status: 500 });
+    }
+    return jsonResponse({ text: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) });
+  };
+  const { fetchImpl } = makeFetch(failAllImages);
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+
+  assert.equal(result.aiMeta.imageAppliedCount, 0);
+  assert.ok(result.aiMeta.imageErrors.length > 0);
+  // 全图失败 → 任务失败 + visual agent 失败
+  assert.equal(result.status, TASK_STATUS.failed);
+  const visual = result.agents.find(agent => agent.id === "visual");
+  assert.ok(visual, "rednote 应含 visual agent");
+  assert.equal(visual.status, TASK_STATUS.failed);
+  assert.ok(visual.error && visual.error.length > 0);
+  // 文案仍成功（部分能力不被整单拖垮）
+  assert.equal(result.aiMeta.copyApplied, 3);
+});
+
+test("provider error carrying a leaked token is redacted before it reaches aiMeta (no secret in persisted state)", async () => {
+  const leakedKey = "sk-abcdef0123456789";
+  const leakedUrl = `https://api.example.com/v1/images?api_key=${leakedKey}`;
+  const leakyRouter = (url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.mode === "image") {
+      return jsonResponse(
+        { error: { message: `image upstream 401 at ${leakedUrl} (Bearer ${leakedKey})` } },
+        { ok: false, status: 401 }
+      );
+    }
+    return jsonResponse({ text: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) });
+  };
+  const { fetchImpl } = makeFetch(leakyRouter);
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+
+  // 失败被记录，但 aiMeta（随 task state 落 localStorage/Supabase）不得残留任何原始 token / url。
+  assert.ok(result.aiMeta.imageErrors.length >= 1);
+  const aiMetaSerialized = JSON.stringify(result.aiMeta);
+  assert.ok(!aiMetaSerialized.includes(leakedKey), "aiMeta 不得包含原始 api key");
+  assert.ok(!aiMetaSerialized.includes("api_key="), "aiMeta 不得包含 api_key 查询串");
+  // 失败 variant 的 artifact 同样进持久化面，必须脱敏。
+  const failedArtifacts = result.variants
+    .flatMap(variant => variant.artifacts || [])
+    .filter(artifact => artifact.status === "failed");
+  assert.ok(failedArtifacts.length >= 1);
+  assert.ok(failedArtifacts.every(artifact => typeof artifact.error === "string" && artifact.error.length > 0), "failed artifact 必须带 error");
+  assert.ok(!JSON.stringify(failedArtifacts).includes(leakedKey), "failed artifact 不得包含原始 api key");
 });
 
 test("enabledModes.image=false skips image generation entirely", async () => {
