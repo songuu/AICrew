@@ -34,7 +34,7 @@ import {
 } from "../lib/ai/config.js";
 import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
 import { runFlow, runFlowWithAI } from "../lib/flow/execute.js";
-import { stashVariantImages, rehydrateVariantImages, IMAGE_STORE_KEY, STASH_UNBOUNDED } from "../lib/storage/imageStore.js";
+import { stashVariantImages, rehydrateVariantImages, stashLibraryAssets, rehydrateLibraryAssets, IMAGE_STORE_KEY, STASH_UNBOUNDED } from "../lib/storage/imageStore.js";
 import { validateLibraryAsset, normalizeLibraryAsset, normalizeMaterial } from "../lib/storage/materialStore.js";
 import { assembleExportBundle } from "../lib/export/bundle.js";
 import { stripArtifactsForStorage } from "../lib/artifacts.js";
@@ -182,6 +182,15 @@ function stripExportMedia(record) {
   return { ...record, files: stripArtifactsForStorage(record.files) };
 }
 
+// 持久化前剥离 asset.ref：上传素材的二进制（base64 data URL）下沉到独立 aicrew_assets
+// （命名空间 library:<id>），与变体封面同源治理。剥离前由保存副作用 stashLibraryAssets，
+// 读取时 rehydrateLibraryAssets 回填，因此素材跨会话不丢，又不撑爆主 snapshot。
+function stripAssetMedia(asset) {
+  if (!asset?.ref) return asset;
+  const { ref, ...rest } = asset;
+  return rest;
+}
+
 function sanitizeStateForStorage(state) {
   const stripList = list =>
     (list || []).map(item => (item?.variants ? { ...item, variants: item.variants.map(stripVariantMedia) } : item));
@@ -189,7 +198,8 @@ function sanitizeStateForStorage(state) {
     ...state,
     tasks: stripList(state.tasks),
     projects: stripList(state.projects),
-    exports: (state.exports || []).map(stripExportMedia)
+    exports: (state.exports || []).map(stripExportMedia),
+    assets: (state.assets || []).map(stripAssetMedia)
   };
 }
 
@@ -287,18 +297,22 @@ export function AICrewStudio({ initialView = "dashboard" }) {
 
       let baseState;
       if (snapshot) {
-        // assets 可达 → 用服务端 assets 回填；assets 不可达 → 回退本地 imageStore（默认 storage），不可用空 shim 抹掉封面。
-        baseState = assetsReachable
-          ? rehydrateVariantImages(snapshot, imageShim(assetStore))
-          : rehydrateVariantImages(snapshot);
+        // assets 可达 → 用服务端 assets 同时回填变体封面与库素材 ref；assets 不可达 → 回退本地 imageStore（默认 storage），不可用空 shim 抹掉媒体。
+        if (assetsReachable) {
+          const shim = imageShim(assetStore);
+          baseState = rehydrateLibraryAssets(rehydrateVariantImages(snapshot, shim), shim);
+        } else {
+          baseState = rehydrateLibraryAssets(rehydrateVariantImages(snapshot));
+        }
       } else {
         // 本地兜底（默认 window.localStorage）。
-        baseState = rehydrateVariantImages(readState());
+        baseState = rehydrateLibraryAssets(rehydrateVariantImages(readState()));
         // 仅当服务端可达且确为空（null）时迁移本地历史上云；不可达（undefined）不写，避免污染。
         if (snapshot === null) {
           try {
             const shim = imageShim(null);
             stashVariantImages(baseState, shim, STASH_UNBOUNDED); // 迁移不裁剪：云端无配额
+            stashLibraryAssets(baseState, shim, STASH_UNBOUNDED); // 库素材二进制一并迁移上云
             const migratedAssets = shim.getItem(IMAGE_STORE_KEY);
             if (migratedAssets) await remote.pushAssetStore(JSON.parse(migratedAssets));
             await remote.pushSnapshot(sanitizeStateForStorage(baseState));
@@ -344,6 +358,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
     // 本地缓存（离线兜底）：保持既有 stash + 主 blob 落 localStorage，断网仍可恢复。
     try {
       stashVariantImages(state);
+      stashLibraryAssets(state);
       window.localStorage.setItem(storageKey, JSON.stringify(sanitizeStateForStorage(state)));
     } catch {
       // 配额超限/序列化失败时静默降级：内存态不受影响，仅本次不落本地缓存。
@@ -356,6 +371,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
         .serializeWrite(async () => {
           const shim = imageShim(null);
           stashVariantImages(state, shim, STASH_UNBOUNDED);
+          stashLibraryAssets(state, shim, STASH_UNBOUNDED); // 同 shim 合并：避免 replace-all 抹掉库素材行
           const raw = shim.getItem(IMAGE_STORE_KEY);
           await remote.pushAssetStore(raw ? JSON.parse(raw) : { items: [] });
           await remote.pushSnapshot(sanitizeStateForStorage(state));
@@ -388,6 +404,13 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   function navigate(nextView) {
     setView(nextView);
     window.history.pushState(null, "", hrefFor(nextView));
+  }
+
+  // 就地选中：仅切换当前历史任务，不离开历史页 —— 右侧 detail 面板随即显示该任务的「之前效果」。
+  function selectHistoryTask(nextTask) {
+    if (!nextTask) return;
+    setSelectedTaskId(nextTask.id);
+    setSelectedVariantId(nextTask.variants?.[0]?.id || null);
   }
 
   function openHistoryTask(nextTask, nextView = "workbench") {
@@ -760,6 +783,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
             <History
               state={state}
               selectedTaskId={task?.id}
+              selectTask={selectHistoryTask}
               openTask={openHistoryTask}
               editTask={editHistoryTask}
               toggleLock={toggleHistoryLock}
@@ -1160,7 +1184,7 @@ function Workbench({
   );
 }
 
-function History({ state, selectedTaskId, openTask, editTask, toggleLock }) {
+function History({ state, selectedTaskId, selectTask, openTask, editTask, toggleLock }) {
   const projectByTask = new Map((state.projects || []).map(project => [project.taskId, project]));
   const selectedTask = state.tasks.find(task => task.id === selectedTaskId) || state.tasks[0];
   return (
@@ -1181,7 +1205,7 @@ function History({ state, selectedTaskId, openTask, editTask, toggleLock }) {
             const locked = Boolean(item.locked);
             return (
               <article className={`history-row ${item.id === selectedTaskId ? "active" : ""} ${locked ? "locked" : ""}`} key={item.id}>
-                <button type="button" className="history-preview reset-button" onClick={() => openTask(item)} aria-label={`查看 ${item.brief.productName}`}>
+                <button type="button" className="history-preview reset-button" onClick={() => selectTask(item)} aria-label={`查看 ${item.brief.productName}`}>
                   <PhonePreview variant={variant} />
                 </button>
                 <div className="history-main">
@@ -1201,7 +1225,7 @@ function History({ state, selectedTaskId, openTask, editTask, toggleLock }) {
                     {locked && <span>locked</span>}
                   </div>
                   <div className="history-actions">
-                    <button type="button" className="ghost-button" onClick={() => openTask(item)}>
+                    <button type="button" className="ghost-button" onClick={() => selectTask(item)}>
                       查看效果
                     </button>
                     <button type="button" className="primary-button" onClick={() => editTask(item)} disabled={locked} title={locked ? "已锁定，不能重新编辑" : "回填 Brief 并重新编辑"}>
@@ -1226,14 +1250,73 @@ function History({ state, selectedTaskId, openTask, editTask, toggleLock }) {
             <p className="eyebrow">Selected</p>
             <h3>{selectedTask?.brief.productName || "No task"}</h3>
           </div>
-          {selectedTask?.locked && <span className="status-chip locked">已锁定</span>}
+          <div className="history-detail-actions">
+            {selectedTask?.locked && <span className="status-chip locked">已锁定</span>}
+            <button type="button" className="ghost-button" onClick={() => openTask(selectedTask)} disabled={!selectedTask} title="在工作台打开此历史任务">
+              在工作台打开
+            </button>
+          </div>
         </div>
-        <VariantCompare task={selectedTask} />
+        <HistoryEffect task={selectedTask} />
         <AgentTimeline task={selectedTask} />
       </section>
     </div>
   );
 }
+// 历史「之前的效果」面板：把所选历史任务的真实产出（封面预览 + 文案 + 评分）就地铺开，
+// 多变体可切换预览。封面 imageUrl 由 rehydrateVariantImages 从 Supabase 回填，故跨会话可见。
+function HistoryEffect({ task }) {
+  const variants = task?.variants || [];
+  const [variantId, setVariantId] = useState(variants[0]?.id || null);
+  useEffect(() => {
+    setVariantId(task?.variants?.[0]?.id || null);
+  }, [task?.id]);
+  const active = variants.find(item => item.id === variantId) || variants[0];
+  if (!task || !active) return <p className="empty-state">该历史暂无可预览的效果</p>;
+  const hashtags = Array.isArray(active.hashtags) ? active.hashtags : [];
+  return (
+    <div className="history-effect">
+      <div className="history-effect-stage">
+        <PhonePreview variant={active} size="large" />
+      </div>
+      <div className="history-effect-side">
+        <div className="history-effect-head">
+          <strong>
+            {active.name} v{active.version}
+          </strong>
+          <span className={`score-badge ${qualityTone(active.score)}`}>{active.score}</span>
+        </div>
+        <p className="hook-line">{active.hook}</p>
+        {active.caption && (
+          <div className="copy-pack">
+            <strong>{active.caption}</strong>
+            {hashtags.length > 0 && <span>{hashtags.join(" ")}</span>}
+          </div>
+        )}
+        {variants.length > 1 && (
+          <div className="history-variant-switch" role="tablist" aria-label="变体切换">
+            {variants.map(item => (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={item.id === active.id}
+                className={`variant-chip ${item.id === active.id ? "active" : ""}`}
+                onClick={() => setVariantId(item.id)}
+              >
+                <span className={`score-badge ${qualityTone(item.score)}`}>{item.score}</span>
+                <em>
+                  {item.name} v{item.version}
+                </em>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Projects({ state, task, navigate }) {
   return (
     <div className="page-grid two">

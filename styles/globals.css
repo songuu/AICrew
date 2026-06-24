@@ -5439,6 +5439,103 @@ body::after {
   top: 98px;
 }
 
+.history-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-detail-actions .ghost-button {
+  min-height: 32px;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
+/* 之前的效果：左封面预览 + 右文案/评分/变体切换。窄列优先纵向堆叠，宽时并排。 */
+.history-effect {
+  display: grid;
+  grid-template-columns: minmax(0, 150px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  margin: 4px 0 16px;
+}
+
+.history-effect-stage {
+  display: grid;
+  place-items: center;
+}
+
+.history-effect-stage .phone-preview.large {
+  width: 100%;
+  max-width: 150px;
+}
+
+.history-effect-side {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.history-effect-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.history-effect-head strong {
+  font-size: 15px;
+}
+
+.history-effect .hook-line {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.history-variant-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.variant-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 160ms var(--ease), color 160ms var(--ease), background 160ms var(--ease);
+}
+
+.variant-chip em {
+  font-style: normal;
+  font-size: 12px;
+}
+
+.variant-chip:hover {
+  border-color: var(--line-strong);
+}
+
+.variant-chip.active {
+  border-color: rgba(92, 225, 255, 0.58);
+  background: rgba(92, 225, 255, 0.08);
+  color: #eaf6ff;
+}
+
+@media (max-width: 900px) {
+  .history-effect {
+    grid-template-columns: 1fr;
+  }
+
+  .history-effect-stage .phone-preview.large {
+    max-width: 180px;
+  }
+}
+
 .status-chip.locked {
   border-color: rgba(255, 200, 87, 0.35);
   color: #ffd37a;
