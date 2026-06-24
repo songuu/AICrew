@@ -5,6 +5,7 @@ import {
   driveCreativeTask,
   runCreativeWorkflowWithSkill,
   retryAgentStep,
+  reconcileInterruptedTasks,
   findSkill,
   normalizeBrief
 } from "../lib/domain.js";
@@ -133,6 +134,43 @@ test("retryAgentStep keeps the task failed when the retry itself fails (charge o
   assert.ok(!retried.error.includes("sk-aaaaaaaaaaaa"), "retry 失败 error 必须脱敏");
   assert.equal(task.credits.actual, creditsBefore + cost); // 失败也只扣一次
   assert.ok(task.agents.slice(2).every(step => step.status === TASK_STATUS.queued), "下游仍 queued");
+});
+
+test("reconcileInterruptedTasks flips orphaned running/queued tasks to failed-interrupted", () => {
+  const state = {
+    tasks: [
+      { id: "t1", status: TASK_STATUS.completed, agents: [{ id: "a", status: TASK_STATUS.completed }] },
+      { id: "t2", status: TASK_STATUS.running, agents: [
+        { id: "a", status: TASK_STATUS.completed },
+        { id: "b", status: TASK_STATUS.running },
+        { id: "c", status: TASK_STATUS.queued }
+      ] },
+      { id: "t3", status: TASK_STATUS.queued, agents: [{ id: "a", status: TASK_STATUS.queued }] }
+    ]
+  };
+  const out = reconcileInterruptedTasks(state);
+
+  // 完成态不动（引用保持）
+  assert.equal(out.tasks[0].status, TASK_STATUS.completed);
+  assert.equal(out.tasks[0], state.tasks[0]);
+  // running task → failed-interrupted；其 running agent → failed，queued agent 不动
+  assert.equal(out.tasks[1].status, TASK_STATUS.failed);
+  assert.equal(out.tasks[1].interrupted, true);
+  assert.equal(out.tasks[1].agents[0].status, TASK_STATUS.completed);
+  assert.equal(out.tasks[1].agents[1].status, TASK_STATUS.failed);
+  assert.ok(out.tasks[1].agents[1].error);
+  assert.equal(out.tasks[1].agents[2].status, TASK_STATUS.queued);
+  // queued task → failed-interrupted
+  assert.equal(out.tasks[2].status, TASK_STATUS.failed);
+  assert.equal(out.tasks[2].interrupted, true);
+});
+
+test("reconcileInterruptedTasks returns the same state object when nothing is orphaned (no churn)", () => {
+  const state = { tasks: [{ id: "t1", status: TASK_STATUS.completed }] };
+  assert.equal(reconcileInterruptedTasks(state), state);
+  // 防御：非数组 tasks / 空 state 不抛
+  assert.equal(reconcileInterruptedTasks(null), null);
+  assert.deepEqual(reconcileInterruptedTasks({ tasks: undefined }), { tasks: undefined });
 });
 
 test("runCreativeWorkflowWithSkill (sync wrapper) stays structurally back-compat", () => {

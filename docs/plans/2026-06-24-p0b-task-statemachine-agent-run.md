@@ -179,8 +179,16 @@ related:
 | T2 plan/drive 拆分 + 顺序运行器 | ✅ done | `lib/domain.js`(planCreativeTask + driveCreativeTask + defaultAgentExecutor seam + 同步包装器；删 dead buildAgentEvents)、`tests/task-runner.test.js`(新) | `npm test` 225/223 pass/2 skip/0 fail；4 新测试绿；结构同构保持(三模式经 skill.agents 顺序=拓扑序，drive 不读 flow.mode) |
 | T3 失败一等公民 | ✅ done | `lib/domain.js`(markAgentFailed + driveCreativeTask try/catch：failed+脱敏 error、下游留 queued、task 落 failed 仍建产物)、`lib/ai/workflow.js`(全图失败→visual failed+task failed、灾难性 catch→failed)、tests | `npm test` 227/225；2 新测试绿。注：AI 仍 post-hoc enrichment，逐 agent AI executor 路由后续细化(seam 已就位) |
 | T4 retry from failed | ✅ done | `lib/domain.js`(retryAgentStep 改走 running→completed\|failed + 可注入 executor + 解封下游 + 重新结算 status；扣费/事件恰好一次) | `npm test` 229/227；2 新测试绿；back-compat(completed 任务重试不变) |
-| T5 status 持久化 + 启动调和 | ⬜ 待开始 | — | — |
-| T6 AgentTimeline 四态 UI | ⬜ 待开始 | — | — |
+| T5 status 持久化 + 启动调和 | ✅ done | `supabase/migrations/20260624160000_add_task_status.sql`(新，幂等 add column)、`lib/db/repositories/state.js`(status 列与 payload 同步)、`lib/domain.js`(reconcileInterruptedTasks 纯函数)、`components/AICrewStudio.jsx`(加载后施用调和)、tests | `npm test` 231/229；2 新测试绿；build 绿。⚠ test:db 需先 `npm run db:migrate`(新增列) |
+| T6 AgentTimeline 四态 UI | ✅ done | `components/AICrewStudio.jsx`(agent 四态 pill + 失败 error + Retry 门控在 failed + task/project chip 绑枚举 + statusLabel)、`styles/globals.css`(四态配色) | `npm test` 231/229；build 绿。注：Retry 改为仅 failed 显示(原全 agent)；OrchestratorConsole 装饰 timer 中和未做(纯动画，盲改有风险，留后续) |
+
+## Phase 3.7: 执行边界 / 后续
+
+- **Retry 语义变更**：Retry 按钮现仅对 `status==='failed'` 的 agent 显示（原对全部 completed agent 显示）。同步 demo 无失败 → 默认不出现 Retry，符合「Retry=重试失败」语义。
+- **AI 逐 agent executor 路由**（T3 deferred）：AI 路径仍是 post-hoc enrichment，失败已非静默（全图失败→visual failed+task failed、灾难性→failed），但未逐 agent drive-via-executor。domain seam 已就位。
+- **OrchestratorConsole 装饰 reveal timer 中和**（T6 deferred）：纯动画，盲改风险高，留待可视验证时处理。
+- **test:db**：本 sprint 新增 `aicrew_tasks.status` 列，跑 `npm run test:db` 前必须先 `npm run db:migrate`（幂等）。沙箱无 DB，本轮未跑 test:db。
+- **credits 耦合**（决策 b）：照旧累加不退款；reserve/settle/release 留 credit-system sprint（见 [[2026-06-24-credit-system-design]]）。
 
 ## Phase 4: Review Checklist（占位，Work 后填）
 
