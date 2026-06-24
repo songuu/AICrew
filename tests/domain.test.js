@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   agents,
   buildExportFiles,
+  canEditTask,
   calculateQualityScore,
   createInitialState,
   createProjectFromTask,
@@ -23,6 +24,7 @@ import {
   retryAgentStep,
   runCreativeWorkflow,
   saveSkillFromProject,
+  setTaskLocked,
   skills,
   skillGroups,
   skillsInGroup
@@ -713,4 +715,18 @@ test("variantCount clamps out-of-range values (>pool→pool cap, 0/NaN→3)", ()
   assert.equal(run(99), 6); // 角度池上限
   assert.equal(run(0), 3); // 0/NaN → 默认 3
   assert.equal(run(1), 1);
+});
+
+test("locks generated tasks without mutating the original state", () => {
+  const state = createInitialState();
+  const taskId = state.tasks[0].id;
+  const locked = setTaskLocked(state, taskId, true);
+
+  assert.equal(canEditTask(locked.tasks[0]), false);
+  assert.equal(locked.tasks[0].locked, true);
+  assert.equal(locked.projects[0].locked, true);
+  assert.equal(state.tasks[0].locked, undefined);
+
+  const unlocked = setTaskLocked(locked, taskId, false);
+  assert.equal(canEditTask(unlocked.tasks[0]), true);
 });

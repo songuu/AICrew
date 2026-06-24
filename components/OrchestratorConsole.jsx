@@ -28,6 +28,17 @@ import { CanvasStudio } from "./canvas/CanvasStudio.jsx";
 
 const skillNameFor = skillId => skills.find(skill => skill.id === skillId)?.name || "";
 
+function mergeMaterials(...groups) {
+  const byName = new Map();
+  for (const group of groups) {
+    for (const item of group || []) {
+      const material = normalizeMaterial(item);
+      if (material.name) byName.set(material.name, material);
+    }
+  }
+  return [...byName.values()];
+}
+
 const AGENT_BY_ID = new Map(agents.map(agent => [agent.id, agent]));
 
 // 三档「驾驶模式」：自由度 / 成本随档位升高。文案直接进 UI。
@@ -179,7 +190,7 @@ function FlowOverlay({ flow }) {
   );
 }
 
-export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task, mode, onModeChange, onGenerateImage }) {
+export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task, mode, onModeChange, onGenerateImage, editSeed, libraryMaterials = [] }) {
   const [idea, setIdea] = useState("给露营灯做一组小红书种草笔记");
   const [flow, setFlow] = useState(() => createFlow("auto"));
   const [route, setRoute] = useState(null); // {rationale, matchedSkill, summary, brief}
@@ -208,6 +219,31 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const [skillTab, setSkillTab] = useState(skillGroups[0].id);
 
+  useEffect(() => {
+    if (!editSeed?.id) return;
+    const brief = editSeed.brief || {};
+    const platformName = findPlatformPreset(brief.platform || "抖音").name;
+    const nextIdea = [
+      `产品 ${brief.productName || "AICrew Product"}`,
+      `受众 ${brief.targetAudience || "目标用户"}`,
+      `目标 ${brief.goal || "生成可发布内容包"}`,
+      `${platformName} ${brief.style || ""}`.trim()
+    ].join("，");
+    setIdea(nextIdea);
+    setParams(prev => ({
+      ...prev,
+      platform: platformName,
+      audience: brief.targetAudience || "",
+      skillId: editSeed.skillId || "",
+      materials: mergeMaterials(brief.materials || [])
+    }));
+    if (editSeed.skillId) {
+      setFlow(skillToFlow(editSeed.skillId, mode, flow.brief));
+      setRoute(null);
+      setPhase("ready");
+      setRevealCount(Infinity);
+    }
+  }, [editSeed?.id]);
   // 指定 skill：立即用该 skill 播种 flow，使节点链 / credits 同步反映选择；清空则回到自动编排。
   function onPickSkill(skillId) {
     setParams(prev => ({ ...prev, skillId }));
@@ -338,7 +374,10 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
     // 手动模式：标记本次运行来自对话，生成完成后把结果卡内联进对话流。
     if (mode === "manual") awaitingResultRef.current = true;
     // 平台 / 受众 / 素材收敛进 brief（唯一事实来源）；创意文本或路由 brief 作基底。
-    const brief = mergeCreativeParams(briefOverride || parseBriefText(idea), params);
+    const brief = mergeCreativeParams(briefOverride || parseBriefText(idea), {
+      ...params,
+      materials: mergeMaterials(libraryMaterials, params.materials)
+    });
     // 选中预设 skill 时透传创作意图（promise/bestFor），经 flowToSkill 进入 AI prompt，
     // 使「选了哪个技能」真正改变生成结果（对标 RoboNeo 技能驱动生成）。
     const picked = skills.find(skill => skill.id === params.skillId);
@@ -550,6 +589,13 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
             ＋ 上传图片
           </button>
           <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={onUploadMaterials} />
+          {libraryMaterials.map((material, index) => (
+            <span key={`library-${material.name}-${index}`} className="oc-material-chip library" title={`素材库引用：${material.name}`}>
+              {material.ref?.startsWith("data:image/") ? <img src={material.ref} alt="" className="oc-material-thumb" /> : null}
+              <em>{material.name}</em>
+              <small>引用</small>
+            </span>
+          ))}
           {params.materials.map((material, index) => (
             <span key={`${material.name}-${index}`} className="oc-material-chip" title={material.name}>
               {material.ref ? <img src={material.ref} alt="" className="oc-material-thumb" /> : null}

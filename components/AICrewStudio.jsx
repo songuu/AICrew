@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   agents as agentCatalog,
   buildExportRecord,
+  canEditTask,
   createAsset,
   createInitialState,
   createProjectFromTask,
@@ -16,6 +17,7 @@ import {
   retryAgentStep,
   runCreativeWorkflow,
   saveSkillFromProject,
+  setTaskLocked,
   skills
 } from "../lib/domain.js";
 import {
@@ -31,6 +33,7 @@ import {
 import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
 import { runFlow, runFlowWithAI } from "../lib/flow/execute.js";
 import { stashVariantImages, rehydrateVariantImages, IMAGE_STORE_KEY, STASH_UNBOUNDED } from "../lib/storage/imageStore.js";
+import { validateLibraryAsset, normalizeLibraryAsset, normalizeMaterial } from "../lib/storage/materialStore.js";
 import { assembleExportBundle } from "../lib/export/bundle.js";
 import { stripArtifactsForStorage } from "../lib/artifacts.js";
 import { loadBrandKit, saveBrandKit, normalizeBrandKit } from "../lib/brand/store.js";
@@ -46,6 +49,7 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/aicrew";
 const navItems = [
   ["dashboard", "Dashboard", "◎"],
   ["workbench", "Workbench", "▣"],
+  ["history", "History", "◷"],
   ["canvas", "Canvas", "◳"],
   ["projects", "Projects", "▤"],
   ["assets", "Assets", "◫"],
@@ -70,6 +74,7 @@ const metricLabels = {
 const routeTitles = {
   dashboard: "创作总控台",
   workbench: "AI 创作工作台",
+  history: "历史记录",
   canvas: "无限画布",
   projects: "项目",
   assets: "素材库",
@@ -231,10 +236,20 @@ function aiRuntimeText(aiConfig) {
   return `${aiConfig.providerName} · ${describeSelectedModel(aiConfig, aiConfig.selection, "text")}`;
 }
 
+function assetToMaterial(asset) {
+  return normalizeMaterial({
+    name: asset?.name,
+    type: asset?.mimeType || asset?.type,
+    ref: asset?.ref || ""
+  });
+}
 export function AICrewStudio({ initialView = "dashboard" }) {
   const [state, setState] = useState(null);
   const [view, setView] = useState(initialView);
+  const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [selectedVariantId, setSelectedVariantId] = useState(null);
+  const [editSeed, setEditSeed] = useState(null);
+  const [referencedAssetIds, setReferencedAssetIds] = useState([]);
   // AI 平台配置来自 server env；浏览器只保存“选择哪个系统模型”的 id，不接收 token/baseURL。
   const [aiConfig, setAiConfig] = useState(() => normalizeSystemAiConfig());
   const [generating, setGenerating] = useState(false);
@@ -310,6 +325,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
       // 启动调和：被 reload 打断的孤儿 running/queued task → failed-interrupted，避免永久卡「运行中」。
       const nextState = reconcileInterruptedTasks({ ...baseState, brandKit });
       setState(nextState);
+      setSelectedTaskId(nextState.tasks?.[0]?.id || null);
       setSelectedVariantId(nextState.tasks?.[0]?.variants?.[0]?.id || null);
     })();
 
@@ -349,16 +365,56 @@ export function AICrewStudio({ initialView = "dashboard" }) {
     return () => clearTimeout(handle);
   }, [state]);
 
-  const task = state?.tasks?.[0];
-  const project = state?.projects?.[0];
+  const task = state?.tasks?.find(item => item.id === selectedTaskId) || state?.tasks?.[0];
+  const project = state?.projects?.find(item => item.taskId === task?.id) || state?.projects?.[0];
   const allSkills = useMemo(() => [...skills, ...(state?.customSkills || [])], [state]);
+  const referencedMaterials = useMemo(() => {
+    if (!state) return [];
+    const ids = new Set(referencedAssetIds);
+    return state.assets.filter(asset => ids.has(asset.id)).map(assetToMaterial);
+  }, [state, referencedAssetIds]);
   const activeVariant = task?.variants.find(item => item.id === selectedVariantId) || task?.variants?.[0];
+
+  useEffect(() => {
+    if (!task) return;
+    if (!selectedTaskId || selectedTaskId !== task.id) setSelectedTaskId(task.id);
+    if (!task.variants?.some(item => item.id === selectedVariantId)) {
+      setSelectedVariantId(task.variants?.[0]?.id || null);
+    }
+  }, [task?.id, selectedTaskId, selectedVariantId]);
 
   function navigate(nextView) {
     setView(nextView);
     window.history.pushState(null, "", hrefFor(nextView));
   }
 
+  function openHistoryTask(nextTask, nextView = "workbench") {
+    if (!nextTask) return;
+    setSelectedTaskId(nextTask.id);
+    setSelectedVariantId(nextTask.variants?.[0]?.id || null);
+    navigate(nextView);
+  }
+
+  function editHistoryTask(nextTask) {
+    if (!canEditTask(nextTask)) return;
+    openHistoryTask(nextTask, "workbench");
+    setEditSeed({
+      id: `${nextTask.id}:${Date.now()}`,
+      brief: nextTask.brief,
+      skillId: nextTask.skillId
+    });
+  }
+
+  function toggleHistoryLock(taskId) {
+    const nextTask = state?.tasks?.find(item => item.id === taskId);
+    setState(current => setTaskLocked(current, taskId, !nextTask?.locked));
+  }
+
+  function toggleAssetReference(assetId) {
+    setReferencedAssetIds(current =>
+      current.includes(assetId) ? current.filter(id => id !== assetId) : [...current, assetId]
+    );
+  }
   function commitGeneratedTask(nextTask, projectName, creditLabel) {
     setState(current => {
       const nextProject = createProjectFromTask(nextTask, projectName);
@@ -403,6 +459,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
         ]
       };
     });
+    setSelectedTaskId(nextTask.id);
     setSelectedVariantId(nextTask.variants[0]?.id || null);
     navigate("workbench");
   }
@@ -519,7 +576,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
 
   function reviseHook(event) {
     event.preventDefault();
-    if (!task || !activeVariant) return;
+    if (!task || !activeVariant || !canEditTask(task)) return;
     const instruction = new FormData(event.currentTarget).get("instruction") || "";
     const revised = reviseVariantHook(activeVariant, instruction);
     setSelectedVariantId(revised.id);
@@ -551,7 +608,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   }
 
   function retryAgent(agentId) {
-    if (!task) return;
+    if (!task || !canEditTask(task)) return;
     const { task: nextTask, cost } = retryAgentStep(task, agentId);
     setState(current => {
       const nextTasks = current.tasks.map(item => (item.id === task.id ? nextTask : item));
@@ -596,13 +653,20 @@ export function AICrewStudio({ initialView = "dashboard" }) {
     });
   }
 
-  function addAsset() {
-    setState(current => ({
-      ...current,
-      assets: [createAsset("image", `Uploaded asset ${current.assets.length + 1}`, "upload", ["product", "new"]), ...current.assets]
-    }));
+  function addAsset(assetInput) {
+    setState(current => {
+      const normalized = assetInput
+        ? normalizeLibraryAsset(assetInput)
+        : normalizeLibraryAsset({ name: `Uploaded asset ${current.assets.length + 1}`, type: "image/png", source: "upload", tags: ["product", "new"] });
+      const asset = {
+        ...createAsset(normalized.type, normalized.name, normalized.source, normalized.tags),
+        ...normalized,
+        id: makeId("asset"),
+        createdAt: normalized.createdAt || new Date().toISOString()
+      };
+      return { ...current, assets: [asset, ...current.assets] };
+    });
   }
-
   function saveCurrentSkill() {
     if (!project) return;
     setState(current => ({
@@ -630,6 +694,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
     saveBrandKit(freshBrand);
     const nextState = { ...createInitialState(), brandKit: freshBrand };
     setState(nextState);
+    setSelectedTaskId(nextState.tasks?.[0]?.id || null);
     setSelectedVariantId(nextState.tasks?.[0]?.variants?.[0]?.id || null);
     if (serverReadyRef.current) {
       remote.serializeWrite(() => remote.pushBrand(freshBrand)).catch(() => {});
@@ -684,6 +749,15 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               onRetryAgent={retryAgent}
             />
           )}
+          {view === "history" && (
+            <History
+              state={state}
+              selectedTaskId={task?.id}
+              openTask={openHistoryTask}
+              editTask={editHistoryTask}
+              toggleLock={toggleHistoryLock}
+            />
+          )}
           {view === "workbench" && (
             <Workbench
               state={state}
@@ -703,6 +777,9 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               onRetryAgent={retryAgent}
               onModeChange={setWorkbenchMode}
               onGenerateImage={isAiConfigured(aiConfig) ? generateCanvasImage : undefined}
+              editSeed={editSeed}
+              libraryMaterials={referencedMaterials}
+              locked={task?.locked}
             />
           )}
           {view === "canvas" && (
@@ -715,7 +792,15 @@ export function AICrewStudio({ initialView = "dashboard" }) {
             <AiSettings aiConfig={aiConfig} onSelectionChange={updateAiSelection} onRefresh={refreshAiConfig} agentCatalog={agentCatalog} />
           )}
           {view === "projects" && <Projects state={state} task={task} navigate={navigate} />}
-          {view === "assets" && <Assets state={state} addAsset={addAsset} />}
+          {view === "assets" && (
+            <Assets
+              state={state}
+              addAsset={addAsset}
+              referencedAssetIds={referencedAssetIds}
+              toggleAssetReference={toggleAssetReference}
+              navigate={navigate}
+            />
+          )}
           {view === "skills" && <Skills allSkills={allSkills} />}
           {view === "brand" && <Brand state={state} saveBrand={saveBrand} />}
           {view === "exports" && <Exports state={state} />}
@@ -923,7 +1008,7 @@ function Dashboard({ state, task, project, generateQuick, navigate, generating, 
             Open workbench
           </button>
         </div>
-        <AgentTimeline task={task} onRetry={onRetryAgent} />
+        <AgentTimeline task={task} onRetry={onRetryAgent} locked={task?.locked} />
       </section>
       <section className="panel">
         <div className="panel-heading">
@@ -964,7 +1049,10 @@ function Workbench({
   aiConfig,
   onRetryAgent,
   onModeChange,
-  onGenerateImage
+  onGenerateImage,
+  editSeed,
+  libraryMaterials = [],
+  locked
 }) {
   // orchestrator mode 上提到 Workbench：手动模式要让画布占右侧主栏、隐藏 OUTPUT/Runtime，
   // 这些决策在 OrchestratorConsole 之外，故 mode 必须由外层持有并按其重排布局。
@@ -1001,6 +1089,8 @@ function Workbench({
         aiConfig={aiConfig}
         task={task}
         onGenerateImage={onGenerateImage}
+        editSeed={editSeed}
+        libraryMaterials={libraryMaterials}
       />
       {/* 手动模式：流程画布接管右侧主区；OUTPUT + Runtime 默认隐藏，运行后于画布下方整宽显现 */}
       {showOutput && (
@@ -1011,6 +1101,7 @@ function Workbench({
             <p className="eyebrow">Output</p>
             <h3>{task?.brief.productName || "No task"}</h3>
           </div>
+          {locked && <span className="status-chip locked">已锁定</span>}
           <div className="toolbar-actions">
             <button className="ghost-button" onClick={saveCurrentSkill}>
               Save Skill
@@ -1025,7 +1116,7 @@ function Workbench({
             <PhonePreview variant={variant} size="large" />
           </div>
           <div className="variant-detail">
-            <VariantDetail variant={variant} reviseHook={reviseHook} />
+            <VariantDetail variant={variant} reviseHook={reviseHook} locked={locked} />
           </div>
         </div>
         <div className="variant-tabs" role="tablist">
@@ -1052,7 +1143,7 @@ function Workbench({
           </div>
           <span className="status-chip">{task?.credits.actual || 0} credits</span>
         </div>
-        <AgentTimeline task={task} onRetry={onRetryAgent} />
+        <AgentTimeline task={task} onRetry={onRetryAgent} locked={task?.locked} />
         <QaBox task={task} />
       </section>
         </>
@@ -1061,6 +1152,80 @@ function Workbench({
   );
 }
 
+function History({ state, selectedTaskId, openTask, editTask, toggleLock }) {
+  const projectByTask = new Map((state.projects || []).map(project => [project.taskId, project]));
+  const selectedTask = state.tasks.find(task => task.id === selectedTaskId) || state.tasks[0];
+  return (
+    <div className="page-grid two history-page">
+      <section className="panel wide">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">History</p>
+            <h3>生成历史</h3>
+          </div>
+          <span className="status-chip">{state.tasks.length} runs</span>
+        </div>
+        <div className="history-list">
+          {state.tasks.map(item => {
+            const project = projectByTask.get(item.id);
+            const variant = item.variants?.[0];
+            const materialCount = item.brief?.materials?.length || 0;
+            const locked = Boolean(item.locked);
+            return (
+              <article className={`history-row ${item.id === selectedTaskId ? "active" : ""} ${locked ? "locked" : ""}`} key={item.id}>
+                <button type="button" className="history-preview reset-button" onClick={() => openTask(item)} aria-label={`查看 ${item.brief.productName}`}>
+                  <PhonePreview variant={variant} />
+                </button>
+                <div className="history-main">
+                  <div className="history-title-line">
+                    <div>
+                      <strong>{project?.name || `${item.brief.productName} ${item.brief.platform}`}</strong>
+                      <span>{item.skillName} · {formatDate(item.updatedAt)}</span>
+                    </div>
+                    <span className={`status-chip status-chip--${item.status}`}>{statusLabel(item.status)}</span>
+                  </div>
+                  <p>{variant?.hook || item.brief.goal}</p>
+                  <div className="history-meta">
+                    <span>{item.variants?.length || 0} variants</span>
+                    <span>{item.agents?.length || 0} agents</span>
+                    <span>{materialCount} references</span>
+                    <span>{item.credits?.actual || 0} credits</span>
+                    {locked && <span>locked</span>}
+                  </div>
+                  <div className="history-actions">
+                    <button type="button" className="ghost-button" onClick={() => openTask(item)}>
+                      查看效果
+                    </button>
+                    <button type="button" className="primary-button" onClick={() => editTask(item)} disabled={locked} title={locked ? "已锁定，不能重新编辑" : "回填 Brief 并重新编辑"}>
+                      重新编辑
+                    </button>
+                    <button type="button" className="ghost-button" onClick={() => toggleLock(item.id)}>
+                      {locked ? "解锁" : "锁定"}
+                    </button>
+                  </div>
+                </div>
+                <div className={`score-badge ${qualityTone(project?.qualityScore || item.qa?.overallScore || 0)}`}>
+                  {project?.qualityScore || item.qa?.overallScore || 0}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </section>
+      <section className="panel history-detail">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Selected</p>
+            <h3>{selectedTask?.brief.productName || "No task"}</h3>
+          </div>
+          {selectedTask?.locked && <span className="status-chip locked">已锁定</span>}
+        </div>
+        <VariantCompare task={selectedTask} />
+        <AgentTimeline task={selectedTask} />
+      </section>
+    </div>
+  );
+}
 function Projects({ state, task, navigate }) {
   return (
     <div className="page-grid two">
@@ -1102,25 +1267,65 @@ function Projects({ state, task, navigate }) {
   );
 }
 
-function Assets({ state, addAsset }) {
+function Assets({ state, addAsset, referencedAssetIds = [], toggleAssetReference, navigate }) {
+  const [uploadError, setUploadError] = useState("");
+  const inputRef = useRef(null);
+  const selected = new Set(referencedAssetIds);
+
+  function uploadAssets(event) {
+    const files = Array.from(event.target.files || []);
+    if (inputRef.current) inputRef.current.value = "";
+    setUploadError("");
+    files.forEach(file => {
+      const check = validateLibraryAsset({ name: file.name, type: file.type, size: file.size });
+      if (!check.ok) {
+        setUploadError(check.reason);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => addAsset({ name: file.name, type: file.type, size: file.size, ref: reader.result });
+      reader.onerror = () => setUploadError(`读取失败：${file.name}`);
+      reader.readAsDataURL(file);
+    });
+  }
+
   return (
     <div className="page-grid">
-      <section className="panel wide">
+      <section className="panel wide assets-library-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Assets</p>
             <h3>素材库</h3>
           </div>
-          <button className="primary-button" onClick={addAsset}>
-            Add asset
-          </button>
+          <div className="toolbar-actions">
+            <button className="ghost-button" type="button" onClick={() => navigate("workbench")} disabled={!referencedAssetIds.length}>
+              引用并生成
+            </button>
+            <button className="primary-button" type="button" onClick={() => inputRef.current?.click()}>
+              上传文件 / 图片
+            </button>
+            <input ref={inputRef} type="file" multiple hidden onChange={uploadAssets} accept="image/*,.pdf,.txt,.md,.csv,.json,.doc,.docx,.ppt,.pptx,.xls,.xlsx" />
+          </div>
         </div>
-        <div className="asset-grid">{state.assets.map(asset => <AssetCard asset={asset} key={asset.id} />)}</div>
+        <div className="asset-upload-strip">
+          <strong>{referencedAssetIds.length} 个素材已引用到下一次生成</strong>
+          <span>支持图片、PDF、文档、表格和文本；文件名会作为生成引用进入 brief。</span>
+        </div>
+        {uploadError && <p className="oc-material-error">{uploadError}</p>}
+        <div className="asset-grid">
+          {state.assets.map(asset => (
+            <AssetCard
+              asset={asset}
+              key={asset.id}
+              referenced={selected.has(asset.id)}
+              onToggleReference={() => toggleAssetReference(asset.id)}
+            />
+          ))}
+        </div>
       </section>
     </div>
   );
 }
-
 function Skills({ allSkills }) {
   return (
     <div className="page-grid">
@@ -1617,7 +1822,7 @@ function statusLabel(status) {
   return TASK_STATUS_LABELS[status] || status || "";
 }
 
-function AgentTimeline({ task, onRetry }) {
+function AgentTimeline({ task, onRetry, locked = false }) {
   if (!task) return <p className="empty-state">No active task</p>;
   const recentEvents = (task.events || []).slice(-4).reverse();
   return (
@@ -1644,7 +1849,7 @@ function AgentTimeline({ task, onRetry }) {
                 </div>
                 <div className="agent-step-actions">
                   <span className={"agent-status agent-status--" + agent.status}>{statusLabel(agent.status)}</span>
-                  {onRetry && agent.status === "failed" && (
+                  {onRetry && !locked && agent.status === "failed" && (
                     <button className="ghost-button slim" type="button" onClick={() => onRetry(agent.id)}>
                       Retry
                     </button>
@@ -1740,7 +1945,7 @@ function VariantMini({ variant }) {
   );
 }
 
-function VariantDetail({ variant, reviseHook }) {
+function VariantDetail({ variant, reviseHook, locked = false }) {
   if (!variant) return <p className="empty-state">Generate a content pack first</p>;
   return (
     <>
@@ -1779,10 +1984,10 @@ function VariantDetail({ variant, reviseHook }) {
           ))}
         </div>
       )}
-      <form className="revision-bar" onSubmit={reviseHook}>
-        <input name="instruction" defaultValue="前三秒更强，更直接点出痛点" />
-        <button className="ghost-button" type="submit">
-          Revise hook
+      <form className="revision-bar" onSubmit={reviseHook} aria-disabled={locked}>
+        <input name="instruction" defaultValue="前三秒更强，更直接点出痛点" disabled={locked} />
+        <button className="ghost-button" type="submit" disabled={locked} title={locked ? "历史已锁定，不能编辑" : ""}>
+          {locked ? "已锁定" : "Revise hook"}
         </button>
       </form>
     </>
@@ -1845,21 +2050,28 @@ function VariantCompare({ task }) {
   );
 }
 
-function AssetCard({ asset }) {
+function AssetCard({ asset, referenced = false, onToggleReference }) {
+  const isImage = asset.type === "image" && typeof asset.ref === "string" && asset.ref.startsWith("data:image/");
+  const tags = Array.isArray(asset.tags) ? asset.tags : [];
   return (
-    <article className="asset-card">
+    <article className={`asset-card ${referenced ? "referenced" : ""}`}>
       <div className={`asset-thumb ${asset.type}`}>
-        <span>{asset.type.toUpperCase()}</span>
+        {isImage ? <img src={asset.ref} alt={asset.name} /> : <span>{String(asset.type || "file").toUpperCase()}</span>}
       </div>
       <strong>{asset.name}</strong>
       <span>
         {asset.source} · {asset.size}
       </span>
-      <div className="tag-row">{asset.tags.map(tag => <em key={tag}>{tag}</em>)}</div>
+      {asset.mimeType && <small className="asset-mime">{asset.mimeType}</small>}
+      <div className="tag-row">{tags.map(tag => <em key={tag}>{tag}</em>)}</div>
+      {onToggleReference && (
+        <button type="button" className={`ghost-button asset-reference-button ${referenced ? "active" : ""}`} onClick={onToggleReference}>
+          {referenced ? "已引用" : "引用到生成"}
+        </button>
+      )}
     </article>
   );
 }
-
 function SkillCard({ skill }) {
   return (
     <article className="skill-card" style={{ "--c1": skill.palette?.[0] || "#8bd3ff", "--c2": skill.palette?.[1] || "#ff7a90" }}>
