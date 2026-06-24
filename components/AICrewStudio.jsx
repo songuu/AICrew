@@ -31,6 +31,7 @@ import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
 import { runFlow, runFlowWithAI } from "../lib/flow/execute.js";
 import { stashVariantImages, rehydrateVariantImages, IMAGE_STORE_KEY, STASH_UNBOUNDED } from "../lib/storage/imageStore.js";
 import { assembleExportBundle } from "../lib/export/bundle.js";
+import { stripArtifactsForStorage } from "../lib/artifacts.js";
 import { loadBrandKit, saveBrandKit, normalizeBrandKit } from "../lib/brand/store.js";
 import * as remote from "../lib/storage/remote.js";
 import { generateImage } from "../lib/ai/providers.js";
@@ -161,15 +162,27 @@ function readState() {
 // 不写入主 blob 可避免 localStorage 配额溢出。剥离前会先 stash 到独立 imageStore（见保存副作用），
 // 因此封面跨会话不再丢失——读取时由 rehydrateVariantImages 回填。
 function stripVariantMedia(variant) {
-  if (!variant || !variant.imageUrl) return variant;
-  const { imageUrl, ...rest } = variant;
+  if (!variant) return variant;
+  const next = variant.artifacts ? { ...variant, artifacts: stripArtifactsForStorage(variant.artifacts) } : variant;
+  if (!next.imageUrl) return next;
+  const { imageUrl, ...rest } = next;
   return rest;
+}
+
+function stripExportMedia(record) {
+  if (!record?.files) return record;
+  return { ...record, files: stripArtifactsForStorage(record.files) };
 }
 
 function sanitizeStateForStorage(state) {
   const stripList = list =>
     (list || []).map(item => (item?.variants ? { ...item, variants: item.variants.map(stripVariantMedia) } : item));
-  return { ...state, tasks: stripList(state.tasks), projects: stripList(state.projects) };
+  return {
+    ...state,
+    tasks: stripList(state.tasks),
+    projects: stripList(state.projects),
+    exports: (state.exports || []).map(stripExportMedia)
+  };
 }
 
 // 内存 Storage shim：把服务端 assets store 喂给 imageStore 的纯函数（stash/rehydrate 内部按 storage 读写），
@@ -1249,7 +1262,6 @@ function Exports({ state }) {
           {state.exports.map(item => {
             const fileNames = exportFileNames(item);
             const bundle = assembleExportBundle(item, findVariantById(state, item.variantId));
-            const declaresCover = (item.files || []).some(file => file && file.kind === "image");
             return (
               <article className="export-card" key={item.id}>
                 <div className="export-icon">{fileNames.some(name => name.endsWith(".mp4")) ? "MP4" : "IMG"}</div>
@@ -1268,11 +1280,16 @@ function Exports({ state }) {
                       ⇩ {file.name}
                     </button>
                   ))}
-                  {declaresCover && bundle.imageFiles.length === 0 && (
-                    <button type="button" className="ghost-btn" disabled title="重新生成以获取封面图">
-                      封面待生成
+                  {bundle.failedFiles.map(file => (
+                    <button key={file.name} type="button" className="ghost-btn" disabled title={file.error}>
+                      失败 · {file.name}
                     </button>
-                  )}
+                  ))}
+                  {bundle.deferredFiles.map(file => (
+                    <button key={file.name} type="button" className="ghost-btn" disabled title={file.reason}>
+                      暂未支持 · {file.name}
+                    </button>
+                  ))}
                 </div>
                 <small>{formatDate(item.createdAt)}</small>
               </article>

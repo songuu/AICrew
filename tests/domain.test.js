@@ -196,8 +196,10 @@ test("video skills still deliver a video pack", () => {
   });
 
   assert.ok(task.exports[0].fileNames.includes("video.mp4"));
-  // 视频文件本期仍为占位，不生成真实二进制（守护硬约束）
-  assert.equal(task.exports[0].files.find(file => file.name === "video.mp4").kind, "placeholder");
+  // 视频文件本期仍为 deferred，不生成真实二进制（守护硬约束）
+  const videoFile = task.exports[0].files.find(file => file.name === "video.mp4");
+  assert.equal(videoFile.status, "deferred");
+  assert.equal(videoFile.downloadable, false);
   assert.equal(task.variants[0].duration, 15);
   assert.ok(task.credits.video > 0);
 });
@@ -472,10 +474,12 @@ test("buildExportFiles cover source toggles with variant.imageUrl", () => {
   const base = runCreativeWorkflow({ brief, skillId: "rednote_seeding_note_v1" }).variants[0];
 
   const without = buildExportFiles({ brief, variant: base, skill });
-  assert.equal(without.find(file => file.name === "cover.png").source, "placeholder");
+  assert.equal(without.find(file => file.name === "cover.png").status, "deferred");
 
   const withImage = buildExportFiles({ brief, variant: { ...base, imageUrl: "data:image/png;base64,X" }, skill });
-  assert.equal(withImage.find(file => file.name === "cover.png").source, "variantImage");
+  const cover = withImage.find(file => file.name === "cover.png");
+  assert.equal(cover.status, "ready");
+  assert.equal(cover.refKey, `variant:${base.id}`);
 });
 
 // ---- copy engine upgrade: platform DNA + 真打分 hookStrength ----
@@ -559,7 +563,9 @@ test("buildExportFiles keeps video.mp4 a placeholder (no binary this sprint)", (
   const variant = runCreativeWorkflow({ brief, skillId: "ecom_tiktok_product_ad_v1" }).variants[0];
   const files = buildExportFiles({ brief, variant, skill });
 
-  assert.equal(files.find(file => file.name === "video.mp4").kind, "placeholder");
+  const video = files.find(file => file.name === "video.mp4");
+  assert.equal(video.status, "deferred");
+  assert.equal(video.downloadable, false);
   assert.ok(files.find(file => file.name === "storyboard.csv").content.startsWith("time,shot,action,caption"));
 });
 
