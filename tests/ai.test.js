@@ -458,6 +458,42 @@ test("a single variant image failure is isolated and recorded in aiMeta", async 
   assert.equal(result.variants.filter(variant => variant.imageUrl).length, 2);
 });
 
+test("provider error carrying a leaked token is redacted before it reaches aiMeta (no secret in persisted state)", async () => {
+  const leakedKey = "sk-abcdef0123456789";
+  const leakedUrl = `https://api.example.com/v1/images?api_key=${leakedKey}`;
+  const leakyRouter = (url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.mode === "image") {
+      return jsonResponse(
+        { error: { message: `image upstream 401 at ${leakedUrl} (Bearer ${leakedKey})` } },
+        { ok: false, status: 401 }
+      );
+    }
+    return jsonResponse({ text: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) });
+  };
+  const { fetchImpl } = makeFetch(leakyRouter);
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+
+  // 失败被记录，但 aiMeta（随 task state 落 localStorage/Supabase）不得残留任何原始 token / url。
+  assert.ok(result.aiMeta.imageErrors.length >= 1);
+  const aiMetaSerialized = JSON.stringify(result.aiMeta);
+  assert.ok(!aiMetaSerialized.includes(leakedKey), "aiMeta 不得包含原始 api key");
+  assert.ok(!aiMetaSerialized.includes("api_key="), "aiMeta 不得包含 api_key 查询串");
+  // 失败 variant 的 artifact 同样进持久化面，必须脱敏。
+  const failedArtifacts = result.variants
+    .flatMap(variant => variant.artifacts || [])
+    .filter(artifact => artifact.status === "failed");
+  assert.ok(failedArtifacts.length >= 1);
+  assert.ok(failedArtifacts.every(artifact => typeof artifact.error === "string" && artifact.error.length > 0), "failed artifact 必须带 error");
+  assert.ok(!JSON.stringify(failedArtifacts).includes(leakedKey), "failed artifact 不得包含原始 api key");
+});
+
 test("enabledModes.image=false skips image generation entirely", async () => {
   const { fetchImpl, calls } = makeFetch(studioRouter());
   const result = await runCreativeWorkflowWithAI({
