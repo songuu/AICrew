@@ -15,6 +15,7 @@ import {
   normalizeBrief,
   orchestratorAgent,
   parseBriefText,
+  platformPresets,
   recommendRednoteSkills,
   rednotePromotionSkills,
   rednotePromotionStages,
@@ -479,11 +480,14 @@ test("buildExportFiles cover source toggles with variant.imageUrl", () => {
 
 // ---- copy engine upgrade: platform DNA + 真打分 hookStrength ----
 test("active platform presets carry structured copy DNA (hookPatterns + copyRules)", () => {
-  for (const id of ["抖音", "小红书"]) {
-    const preset = findPlatformPreset(id);
+  // 遍历全部 active presets（不再硬编码 2 个）——新平台必须同样带结构化 DNA，否则文案引擎注入静默退化。
+  for (const preset of platformPresets) {
+    const id = preset.name;
     assert.ok(Array.isArray(preset.hookPatterns) && preset.hookPatterns.length >= 2, `${id} missing hookPatterns`);
     assert.ok(preset.copyRules && preset.copyRules.hookMaxChars > 0, `${id} missing copyRules.hookMaxChars`);
+    assert.ok(Array.isArray(preset.copyRules.captionRange) && preset.copyRules.captionRange.length === 2, `${id} missing copyRules.captionRange`);
     assert.ok(Array.isArray(preset.copyRules.ctaExamples) && preset.copyRules.ctaExamples.length > 0, `${id} missing ctaExamples`);
+    assert.ok(preset.creditMultiplier > 0 && preset.platformFit > 0, `${id} missing credit/fit`);
   }
 });
 
@@ -610,4 +614,40 @@ test("flow optimization wires new agents into existing skills without breaking c
   assert.ok(["trend", "persona", "seo"].every(id => rednote.agents.includes(id)));
   const ugc = skills.find(s => s.id === "ugc_review_v1");
   assert.ok(ugc.agents.includes("persona"));
+});
+
+// ---- 跨境平台扩容：reels / shorts / shopify ----
+test("cross-border platforms are active in platformPresets with distinct ratios/hooks", () => {
+  const byId = Object.fromEntries(platformPresets.map(p => [p.id, p]));
+  assert.ok(byId.reels && byId.shorts && byId.shopify, "reels/shorts/shopify must be active presets");
+  assert.equal(byId.reels.ratio, "9:16");
+  assert.equal(byId.shorts.hookSeconds, 5); // YT 更长 hook 窗口
+  assert.equal(byId.shopify.ratio, "1:1"); // PDP 方图
+  // 平台差异真实存在：CTA 范例各不相同
+  assert.notDeepEqual(byId.reels.copyRules.ctaExamples, byId.shorts.copyRules.ctaExamples);
+});
+
+test("detectPlatform routes new platform tokens from freeform brief", () => {
+  assert.equal(parseBriefText("给露营灯做一组 Instagram Reels 视频").platform, "Instagram Reels");
+  assert.equal(parseBriefText("产品 X，发 YouTube Shorts").platform, "YouTube Shorts");
+  assert.equal(parseBriefText("独立站 Shopify PDP 详情页主图").platform, "Shopify PDP");
+  // 回退不变：无专属 token → 抖音
+  assert.equal(parseBriefText("随便做点带货内容").platform, "抖音");
+  // 过短缩写不误命中：design 含 "ig" 不应路由到 Reels
+  assert.equal(parseBriefText("做个 design 风格的带货图").platform, "抖音");
+});
+
+test("new platforms drive the full pipeline via findPlatformPreset (ratio + qa, no platform=== branch)", () => {
+  for (const id of ["Instagram Reels", "YouTube Shorts", "Shopify PDP"]) {
+    const preset = findPlatformPreset(id);
+    const task = runCreativeWorkflow({
+      brief: normalizeBrief({ productName: "便携补光灯", platform: id, targetAudience: "跨境内容团队" }),
+      skillId: "ecom_tiktok_product_ad_v1",
+      brandKit: defaultBrandKit
+    });
+    assert.equal(task.variants[0].aspectRatio, preset.ratio, `${id} aspectRatio should follow preset`);
+    assert.ok(task.variants[0].hashtags.includes(`#${id.replace(/\s+/g, "")}`), `${id} hashtags should carry #platform`);
+    assert.ok(task.qa.overallScore >= 80, `${id} qa should stay >= 80`);
+    assert.ok(task.credits.estimated > 0);
+  }
 });

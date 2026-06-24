@@ -635,3 +635,61 @@ test("trend/persona/seo nodes inject their guidance into copy prompt; absent whe
     "copy-only skill must not get trend/persona/seo guidance"
   );
 });
+
+// ---- AI 文案层加固：每条 variant 锁定专属框架 + JSON 提取容错 ----
+test("each variant's copy prompt locks a distinct hook framework", async () => {
+  const prompts = [];
+  const { fetchImpl } = makeFetch(promptCaptureRouter(prompts, []));
+  await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+  assert.equal(prompts.length, 3); // 3 个 variant 各一条 prompt
+  // 每条都带专属框架锁
+  assert.ok(prompts.every(p => p.includes("本条主打")), "every prompt should lock a per-angle framework");
+  // 3 条锁定的框架名各不相同（痛点开场 / 好奇缺口 / 紧迫）→ 真差异化
+  const locked = prompts.map(p => (p.match(/本条主打「([^」]+)」/) || [])[1]).filter(Boolean);
+  assert.equal(locked.length, 3);
+  assert.equal(new Set(locked).size, 3, `frameworks should be distinct, got ${locked.join("/")}`);
+});
+
+test("extractJson tolerates code fences and trailing commas (copy still applies)", async () => {
+  // 模型返回 ```json 围栏 + 尾随逗号的脏 JSON——加固后仍应解析成功并应用文案。
+  const dirty = "```json\n{\n  \"hook\": \"被加固解析的钩子\",\n  \"caption\": \"正文\",\n  \"hashtags\": [\"#a\", \"#b\",]\n}\n```";
+  const { fetchImpl } = makeFetch((url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.mode === "image") return jsonResponse({ imageUrl: "data:image/png;base64,IMG" });
+    return jsonResponse({ text: dirty });
+  });
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+  assert.equal(result.aiMeta.copyApplied, result.variants.length, "dirty-but-recoverable JSON should still apply");
+  assert.ok(result.variants.every(v => v.hook === "被加固解析的钩子"));
+});
+
+// ---- 跨境平台扩容：新平台 DNA 经 copyRules/hookGuidance 真实流入 copy prompt ----
+test("a new platform (YouTube Shorts) injects its own DNA into the copy prompt", async () => {
+  const prompts = [];
+  const { fetchImpl } = makeFetch(promptCaptureRouter(prompts, []));
+  await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "便携补光灯", platform: "YouTube Shorts", targetAudience: "跨境内容团队" }),
+    skillId: "ecom_tiktok_product_ad_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+  assert.ok(prompts.length > 0);
+  // hook 指引头部携带平台名 + 该平台 hookSeconds（5s），证明 preset 真实驱动而非硬编码
+  assert.ok(prompts.every(p => p.includes("YouTube Shorts")), "prompt should carry the platform name");
+  assert.ok(prompts.every(p => p.includes("5 秒")), "prompt should carry YouTube Shorts hookSeconds");
+  // 该平台专属 CTA 范例进入文案规范
+  assert.ok(prompts.every(p => p.includes("关注看完整教程")), "prompt should carry the platform-native CTA example");
+});
