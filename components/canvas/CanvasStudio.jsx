@@ -2,7 +2,8 @@
 
 // 真实无限画布工作台：把 RoboNeo 底部操作栏从"皮肤"做成可交互功能。
 // 设计依据 docs/research/2026-06-22-roboneo-canvas-toolbar.md。
-// 画布完全自包含：独立 localStorage key，不 import domain/ai，不污染既有契约。
+// 画布自包含：按 storageKey 区分多实例，不 import domain/ai，不污染既有契约。
+// 持久化：Supabase 为权威源（经 /api/canvas，按 storageKey 区分），localStorage 作离线缓存兜底。
 import { useEffect, useRef, useState } from "react";
 import {
   createScene,
@@ -37,6 +38,7 @@ import {
 } from "../../lib/canvas/viewport.js";
 import { createHistory, commit, undo, redo, canUndo, canRedo } from "../../lib/canvas/history.js";
 import { TOOL, isDrawTool, ADD_MENU, TOOL_SHORTCUTS } from "../../lib/canvas/tools.js";
+import { fetchCanvasDoc, pushCanvasDoc, serializeWrite } from "../../lib/storage/remote.js";
 
 const CANVAS_STORAGE_KEY = "aicrew-canvas-v1";
 
@@ -97,6 +99,8 @@ export function CanvasStudio({
   className = ""
 }) {
   const [history, setHistory] = useState(() => createHistory(createScene()));
+  // 水合门：初始空场景在异步载入完成前不得回写，否则会用空画布覆盖 Supabase 已存数据。
+  const [hydrated, setHydrated] = useState(false);
   const [viewport, setViewport] = useState(() => createViewport());
   const [tool, setTool] = useState(TOOL.SELECT);
   const [selectedId, setSelectedId] = useState(null);
@@ -120,20 +124,43 @@ export function CanvasStudio({
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
 
-  // 载入持久化场景。storageKey 变更（切换承载画布）时重载，避免串场景。
+  // 载入持久化场景：Supabase 权威源，失败/空回退 localStorage。storageKey 变更（切换承载画布）时重载。
   useEffect(() => {
-    setHistory(createHistory(loadScene(storageKey)));
+    let alive = true;
+    setHydrated(false);
+    (async () => {
+      let scene = null;
+      try {
+        const doc = await fetchCanvasDoc(storageKey);
+        if (doc) scene = createScene(sanitizeObjects(doc?.objects));
+      } catch {
+        scene = null; // 服务端不可达 → 本地兜底
+      }
+      if (!scene) scene = loadScene(storageKey);
+      if (!alive) return;
+      setHistory(createHistory(scene));
+      setHydrated(true);
+    })();
+    return () => {
+      alive = false;
+    };
   }, [storageKey]);
 
-  // 仅持久化已提交现态（视口/draft 不入存储）。配额溢出降级并提示用户（不静默丢失）。
+  // 仅持久化已提交现态（视口/draft 不入存储）。本地缓存 + 防抖上云。水合完成前不回写（防空覆盖）。
   useEffect(() => {
+    if (!hydrated) return undefined;
     try {
       window.localStorage.setItem(storageKey, JSON.stringify(history.present));
     } catch {
-      // 内存态不受影响，仅本次未落盘；告知用户避免误以为已保存。
+      // 内存态不受影响，仅本次未落本地缓存；告知用户避免误以为已保存。
       setNotice("存储空间不足，本次改动未能本地保存（画布仍可继续编辑，建议删减大图）。");
     }
-  }, [history.present, storageKey]);
+    const handle = setTimeout(() => {
+      // 串行化：与主组件共用写队列，保证多次防抖写按发起顺序落库，不乱序覆写。
+      serializeWrite(() => pushCanvasDoc(storageKey, history.present)).catch(() => {});
+    }, 600);
+    return () => clearTimeout(handle);
+  }, [history.present, storageKey, hydrated]);
 
   // 添加菜单：点击菜单外部自动关闭（RoboNeo popover 约定）。
   useEffect(() => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   agents as agentCatalog,
   buildExportRecord,
@@ -23,14 +23,16 @@ import {
   hasAiMode,
   isAiConfigured,
   loadAiSelection,
+  normalizeAiSelection,
   normalizeSystemAiConfig,
   saveAiSelection
 } from "../lib/ai/config.js";
 import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
 import { runFlow, runFlowWithAI } from "../lib/flow/execute.js";
-import { stashVariantImages, rehydrateVariantImages } from "../lib/storage/imageStore.js";
+import { stashVariantImages, rehydrateVariantImages, IMAGE_STORE_KEY, STASH_UNBOUNDED } from "../lib/storage/imageStore.js";
 import { assembleExportBundle } from "../lib/export/bundle.js";
-import { loadBrandKit, saveBrandKit } from "../lib/brand/store.js";
+import { loadBrandKit, saveBrandKit, normalizeBrandKit } from "../lib/brand/store.js";
+import * as remote from "../lib/storage/remote.js";
 import { generateImage } from "../lib/ai/providers.js";
 import { renderBrandImageHint } from "../lib/brand/prompt.js";
 import { CanvasStudio } from "./canvas/CanvasStudio.jsx";
@@ -170,13 +172,36 @@ function sanitizeStateForStorage(state) {
   return { ...state, tasks: stripList(state.tasks), projects: stripList(state.projects) };
 }
 
+// 内存 Storage shim：把服务端 assets store 喂给 imageStore 的纯函数（stash/rehydrate 内部按 storage 读写），
+// 从而零改 imageStore.js 即可让封面图走 Supabase。键 IMAGE_STORE_KEY 承载传入 store。
+function imageShim(initialStore) {
+  const map = new Map();
+  if (initialStore) map.set(IMAGE_STORE_KEY, JSON.stringify(initialStore));
+  return {
+    getItem: key => (map.has(key) ? map.get(key) : null),
+    setItem: (key, value) => map.set(key, String(value)),
+    removeItem: key => map.delete(key)
+  };
+}
+
+// AI 模型选择：Supabase 权威源，失败/空回退 localStorage（仅 model id，无 token）。
+async function resolveAiSelection(config) {
+  try {
+    const doc = await remote.fetchAiSelectionDoc();
+    if (doc) return normalizeAiSelection(doc, config);
+  } catch {
+    // 服务端不可达：回退本地缓存。
+  }
+  return loadAiSelection(config);
+}
+
 async function fetchSystemAiConfig(fetchImpl = fetch) {
   const endpoint = `${basePath}/api/ai/generate`;
   try {
     const response = await fetchImpl(`${basePath}/api/ai/config`, { cache: "no-store" });
     if (!response.ok) throw new Error(`系统 AI 配置读取失败 (${response.status})`);
     const config = normalizeSystemAiConfig({ ...(await response.json()), endpoint });
-    return { ...config, selection: loadAiSelection(config) };
+    return { ...config, selection: await resolveAiSelection(config) };
   } catch (error) {
     const config = normalizeSystemAiConfig({
       configured: false,
@@ -201,13 +226,78 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   const [generating, setGenerating] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [workbenchMode, setWorkbenchMode] = useState("auto");
+  // 服务端可达门：仅当挂载时成功读到 server（snapshot 与 assets 均可达）才允许后续破坏性 replace-all 写，
+  // 否则一旦 server 临时不可达就回退本地态、跳过云写，杜绝用空/降级态整覆写清空云端权威数据（评审 D 项）。
+  const serverReadyRef = useRef(false);
 
   useEffect(() => {
     let alive = true;
-    // 回填上次会话被剥离的封面 imageUrl（来自独立 imageStore），并从独立 key 恢复跨会话 Brand Memory。
-    const nextState = { ...rehydrateVariantImages(readState()), brandKit: loadBrandKit() };
-    setState(nextState);
-    setSelectedVariantId(nextState.tasks?.[0]?.variants?.[0]?.id || null);
+    (async () => {
+      // 1) 主快照：Supabase 权威源。服务端有 → 用之 + 用服务端 assets 回填封面；
+      //    服务端空 → 读 localStorage 旧数据并迁移上云（首次接入不丢历史）；服务端不可达 → 纯本地兜底。
+      let snapshot = null; // undefined=不可达；null=可达但空
+      let assetStore = null;
+      let assetsReachable = false;
+      try {
+        snapshot = await remote.fetchSnapshot();
+      } catch {
+        snapshot = undefined;
+      }
+      try {
+        assetStore = await remote.fetchAssetStore();
+        assetsReachable = true;
+      } catch {
+        assetStore = null;
+        assetsReachable = false;
+      }
+      const snapshotReachable = snapshot !== undefined;
+      // 服务端完全可达才开放云写门：任一读失败都说明可能存在未读到的云端数据，不可用本地态去 replace-all 覆写。
+      serverReadyRef.current = snapshotReachable && assetsReachable;
+
+      let baseState;
+      if (snapshot) {
+        // assets 可达 → 用服务端 assets 回填；assets 不可达 → 回退本地 imageStore（默认 storage），不可用空 shim 抹掉封面。
+        baseState = assetsReachable
+          ? rehydrateVariantImages(snapshot, imageShim(assetStore))
+          : rehydrateVariantImages(snapshot);
+      } else {
+        // 本地兜底（默认 window.localStorage）。
+        baseState = rehydrateVariantImages(readState());
+        // 仅当服务端可达且确为空（null）时迁移本地历史上云；不可达（undefined）不写，避免污染。
+        if (snapshot === null) {
+          try {
+            const shim = imageShim(null);
+            stashVariantImages(baseState, shim, STASH_UNBOUNDED); // 迁移不裁剪：云端无配额
+            const migratedAssets = shim.getItem(IMAGE_STORE_KEY);
+            if (migratedAssets) await remote.pushAssetStore(JSON.parse(migratedAssets));
+            await remote.pushSnapshot(sanitizeStateForStorage(baseState));
+            serverReadyRef.current = true; // 迁移成功 → 已与云端对齐，开放后续云写
+          } catch {
+            // 迁移失败不阻断启动；下次状态变更会重试落库。
+          }
+        }
+      }
+
+      // 2) 品牌记忆：Supabase 优先；服务端空则把本地品牌迁移上云。
+      let brandKit;
+      try {
+        const remoteBrand = await remote.fetchBrand();
+        if (remoteBrand) {
+          brandKit = normalizeBrandKit(remoteBrand);
+        } else {
+          brandKit = loadBrandKit();
+          remote.pushBrand(brandKit).catch(() => {});
+        }
+      } catch {
+        brandKit = loadBrandKit();
+      }
+
+      if (!alive) return;
+      const nextState = { ...baseState, brandKit };
+      setState(nextState);
+      setSelectedVariantId(nextState.tasks?.[0]?.variants?.[0]?.id || null);
+    })();
+
     fetchSystemAiConfig().then(config => {
       if (alive) setAiConfig(config);
     });
@@ -217,14 +307,31 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   }, []);
 
   useEffect(() => {
-    if (!state) return;
+    if (!state) return undefined;
+    // 本地缓存（离线兜底）：保持既有 stash + 主 blob 落 localStorage，断网仍可恢复。
     try {
-      // 先把封面 stash 到独立 imageStore，再把（已剥离 imageUrl 的）主 blob 落盘——两者分治避免配额溢出。
       stashVariantImages(state);
       window.localStorage.setItem(storageKey, JSON.stringify(sanitizeStateForStorage(state)));
     } catch {
-      // 配额超限/序列化失败时静默降级：内存态不受影响，仅本次不落盘。
+      // 配额超限/序列化失败时静默降级：内存态不受影响，仅本次不落本地缓存。
     }
+    // Supabase 权威写入（防抖 600ms）：仅在服务端可达门开放时执行，避免用降级态 replace-all 清空云端。
+    // 经 serializeWrite 串行化，杜绝两次写乱序落库致旧态覆写新态（评审 E 项）。stash 用 UNBOUNDED 不裁剪（评审 C 项）。
+    if (!serverReadyRef.current) return undefined;
+    const handle = setTimeout(() => {
+      remote
+        .serializeWrite(async () => {
+          const shim = imageShim(null);
+          stashVariantImages(state, shim, STASH_UNBOUNDED);
+          const raw = shim.getItem(IMAGE_STORE_KEY);
+          await remote.pushAssetStore(raw ? JSON.parse(raw) : { items: [] });
+          await remote.pushSnapshot(sanitizeStateForStorage(state));
+        })
+        .catch(() => {
+          // 服务端不可达：本地缓存已留底，下次状态变更自动重试，不丢数据。
+        });
+    }, 600);
+    return () => clearTimeout(handle);
   }, [state]);
 
   const task = state?.tasks?.[0];
@@ -359,14 +466,16 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   function updateAiSelection(nextSelection) {
     setAiConfig(current => {
       const normalized = normalizeSystemAiConfig(current);
-      const selection = saveAiSelection(nextSelection, normalized);
+      const selection = saveAiSelection(nextSelection, normalized); // 本地缓存
+      remote.pushAiSelectionDoc(selection).catch(() => {}); // Supabase 权威源（best-effort，本地已留底）
       return { ...normalized, selection };
     });
   }
 
-  // 写穿独立 brandStore（跨会话持久化）并同步内存态；brandKit 由 store 归一化后回填。
+  // 写穿 Supabase（权威）+ 本地 brandStore（离线缓存）并同步内存态；brandKit 由 store 归一化后回填。
   function saveBrand(nextBrandKit) {
     const normalized = saveBrandKit(nextBrandKit);
+    remote.pushBrand(normalized).catch(() => {});
     setState(current => ({ ...current, brandKit: normalized }));
   }
 
@@ -498,11 +607,18 @@ export function AICrewStudio({ initialView = "dashboard" }) {
     navigate("exports");
   }
 
+  // 重置 demo：清本地缓存 + 内存初始态。setState 触发 save effect 把初始 snapshot/assets replace-all 重置云端；
+  // 品牌为独立单例文档（不在主 snapshot），故显式重置云端 brand，避免「重置」后旧品牌记忆从云端回流。
   function resetDemo() {
+    const freshBrand = normalizeBrandKit({});
     window.localStorage.removeItem(storageKey);
-    const nextState = createInitialState();
+    saveBrandKit(freshBrand);
+    const nextState = { ...createInitialState(), brandKit: freshBrand };
     setState(nextState);
     setSelectedVariantId(nextState.tasks?.[0]?.variants?.[0]?.id || null);
+    if (serverReadyRef.current) {
+      remote.serializeWrite(() => remote.pushBrand(freshBrand)).catch(() => {});
+    }
     navigate("dashboard");
   }
 
@@ -730,7 +846,7 @@ function FloatingCommandLayer({ state, view, navigate, manualWorkbench }) {
           <em>技能</em>
         </button>
       </div>
-      {/* 底部操作栏（选择/抓手/添加/撤销/重做）已迁移为手动模式画布专属操作坞（oc-canvas-dock），
+      {/* 底部操作栏（选择/抓手/添加/撤销/重做）由手动模式内嵌的 CanvasStudio 自带真实工具坞承担，
           满足「只在手动模式显示」要求；此处全局装饰版移除，避免双坞与跨模式显示。*/}
       {!manualWorkbench && (
         <div className="zoom-dock" aria-label="Canvas status">

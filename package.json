@@ -9,10 +9,13 @@
     "build": "next build",
     "start": "next start",
     "serve:out": "node server.mjs out",
-    "test": "node --test"
+    "db:migrate": "node --env-file=.env scripts/db-migrate.mjs",
+    "test": "node --test",
+    "test:db": "node --env-file=.env --test tests/db.integration.test.js"
   },
   "dependencies": {
     "next": "^16.2.9",
+    "postgres": "^3.4.9",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },
