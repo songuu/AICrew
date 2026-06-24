@@ -5493,8 +5493,15 @@ body::after {
     var(--surface-3);
 }
 
-.asset-reference-button {
-  justify-self: start;
+.asset-card-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.asset-reference-button,
+.asset-delete-button {
   min-height: 34px;
   padding: 0 12px;
 }
@@ -5502,6 +5509,16 @@ body::after {
 .asset-reference-button.active {
   border-color: rgba(69, 224, 198, 0.42);
   color: var(--mint);
+}
+
+.asset-delete-button {
+  border-color: rgba(255, 92, 114, 0.34);
+  color: #ff8a9a;
+}
+
+.asset-delete-button:hover {
+  border-color: rgba(255, 92, 114, 0.58);
+  background: rgba(255, 92, 114, 0.08);
 }
 
 .oc-material-chip.library {

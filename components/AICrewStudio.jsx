@@ -14,6 +14,7 @@ import {
   normalizeStateShape,
   parseBriefText,
   reconcileInterruptedTasks,
+  removeAssetFromState,
   reviseVariantHook,
   retryAgentStep,
   runCreativeWorkflow,
@@ -416,6 +417,11 @@ export function AICrewStudio({ initialView = "dashboard" }) {
       current.includes(assetId) ? current.filter(id => id !== assetId) : [...current, assetId]
     );
   }
+
+  function deleteAsset(assetId) {
+    setState(current => removeAssetFromState(current, assetId));
+    setReferencedAssetIds(current => current.filter(id => id !== assetId));
+  }
   function commitGeneratedTask(nextTask, projectName, creditLabel) {
     setState(current => {
       const nextProject = createProjectFromTask(nextTask, projectName);
@@ -799,6 +805,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               addAsset={addAsset}
               referencedAssetIds={referencedAssetIds}
               toggleAssetReference={toggleAssetReference}
+              deleteAsset={deleteAsset}
               navigate={navigate}
             />
           )}
@@ -1268,7 +1275,7 @@ function Projects({ state, task, navigate }) {
   );
 }
 
-function Assets({ state, addAsset, referencedAssetIds = [], toggleAssetReference, navigate }) {
+function Assets({ state, addAsset, referencedAssetIds = [], toggleAssetReference, deleteAsset, navigate }) {
   const [uploadError, setUploadError] = useState("");
   const inputRef = useRef(null);
   const selected = new Set(referencedAssetIds);
@@ -1320,6 +1327,7 @@ function Assets({ state, addAsset, referencedAssetIds = [], toggleAssetReference
               key={asset.id}
               referenced={selected.has(asset.id)}
               onToggleReference={() => toggleAssetReference(asset.id)}
+              onDelete={() => deleteAsset(asset.id)}
             />
           ))}
         </div>
@@ -2051,7 +2059,7 @@ function VariantCompare({ task }) {
   );
 }
 
-function AssetCard({ asset, referenced = false, onToggleReference }) {
+function AssetCard({ asset, referenced = false, onToggleReference, onDelete }) {
   const isImage = asset.type === "image" && typeof asset.ref === "string" && asset.ref.startsWith("data:image/");
   const tags = Array.isArray(asset.tags) ? asset.tags : [];
   return (
@@ -2065,11 +2073,18 @@ function AssetCard({ asset, referenced = false, onToggleReference }) {
       </span>
       {asset.mimeType && <small className="asset-mime">{asset.mimeType}</small>}
       <div className="tag-row">{tags.map(tag => <em key={tag}>{tag}</em>)}</div>
-      {onToggleReference && (
-        <button type="button" className={`ghost-button asset-reference-button ${referenced ? "active" : ""}`} onClick={onToggleReference}>
-          {referenced ? "已引用" : "引用到生成"}
-        </button>
-      )}
+      <div className="asset-card-actions">
+        {onToggleReference && (
+          <button type="button" className={`ghost-button asset-reference-button ${referenced ? "active" : ""}`} onClick={onToggleReference}>
+            {referenced ? "已引用" : "引用到生成"}
+          </button>
+        )}
+        {onDelete && (
+          <button type="button" className="ghost-button asset-delete-button" onClick={onDelete} aria-label={`删除 ${asset.name}`} title="删除素材">
+            删除
+          </button>
+        )}
+      </div>
     </article>
   );
 }

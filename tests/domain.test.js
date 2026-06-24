@@ -19,6 +19,7 @@ import {
   parseBriefText,
   platformPresets,
   recommendRednoteSkills,
+  removeAssetFromState,
   rednotePromotionSkills,
   rednotePromotionStages,
   reviseVariantHook,
@@ -736,6 +737,17 @@ test("normalizes legacy snapshots before UI render", () => {
   assert.ok(state.tasks.length > 0);
   assert.ok(state.assets.length > 0);
 });
+
+test("removes an asset from state without touching the original", () => {
+  const state = createInitialState();
+  const removedId = state.assets[0].id;
+  const next = removeAssetFromState(state, removedId);
+
+  assert.equal(next.assets.some(asset => asset.id === removedId), false);
+  assert.equal(state.assets.some(asset => asset.id === removedId), true);
+  assert.equal(next.assets.length, state.assets.length - 1);
+});
+
 test("locks generated tasks without mutating the original state", () => {
   const state = createInitialState();
   const taskId = state.tasks[0].id;
