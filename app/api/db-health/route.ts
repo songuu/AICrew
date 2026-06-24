@@ -2,6 +2,7 @@
 // 仅返回连接级状态/错误码与 env 是否存在（布尔），绝不回显密码/key/表名等敏感信息。
 import { json } from "../../../lib/db/http.js";
 import { isDbConfigured, getSql } from "../../../lib/db/client.js";
+import { loadStateSnapshot } from "../../../lib/db/repositories/state.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -59,9 +60,26 @@ async function probeEgressIp() {
   }
 }
 
+// 探 state 路由失败路径：直接复跑 loadStateSnapshot('default') 抓真实错误（仅 aicrew_ 表名，临时）。
+async function probeStateSnapshot() {
+  try {
+    const snapshot = await withTimeout(loadStateSnapshot("default"), 10000);
+    return { ok: true, isNull: snapshot === null };
+  } catch (error) {
+    const e = error;
+    return { ok: false, code: e?.code || e?.cause?.code || "", name: e?.name || "", message: String(e?.message || "").slice(0, 200) };
+  }
+}
+
 export async function GET() {
-  const [postgres, postgrest, egress] = await Promise.all([probePostgres(), probePostgREST(), probeEgressIp()]);
+  const [postgres, postgrest, egress, stateSnapshot] = await Promise.all([
+    probePostgres(),
+    probePostgREST(),
+    probeEgressIp(),
+    probeStateSnapshot()
+  ]);
   return json({
+    stateSnapshot,
     env: {
       SUPABASE_DB_URL: Boolean(process.env.SUPABASE_DB_URL),
       SUPABASE_URL: Boolean(process.env.SUPABASE_URL),
