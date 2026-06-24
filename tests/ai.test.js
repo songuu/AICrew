@@ -500,7 +500,11 @@ function promptCaptureRouter(textPrompts, imagePrompts) {
       imagePrompts.push(body.prompt);
       return jsonResponse({ imageUrl: "data:image/png;base64,IMG" });
     }
-    textPrompts.push(body.prompt);
+    // 只捕获 copy 调用（含 {"hook":"开场钩子"…} schema 标记）；trend/persona/seo 独立 pre-pass
+    // 也是 text 调用，但不应混入 copy prompt 断言（pre-pass 有自己的专项测试）。
+    if (typeof body.prompt === "string" && body.prompt.includes("开场钩子")) {
+      textPrompts.push(body.prompt);
+    }
     return jsonResponse({ text: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) });
   };
 }
@@ -699,7 +703,8 @@ function captureBodies(bodies) {
   return (url, options) => {
     const body = JSON.parse(options.body);
     if (body.mode === "image") return jsonResponse({ imageUrl: "data:image/png;base64,IMG" });
-    bodies.push(body);
+    // 只捕获 copy 调用 body；pre-pass（trend/persona/seo）text 调用不混入 copy system/prompt 断言。
+    if (typeof body.prompt === "string" && body.prompt.includes("开场钩子")) bodies.push(body);
     return jsonResponse({ text: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) });
   };
 }
@@ -730,4 +735,116 @@ test("Western platform (en) uses English copy system + English output directive;
   assert.ok(zh.length > 0);
   assert.ok(zh.every(b => b.system.includes("操盘手")), "zh platform should keep the Chinese copy system");
   assert.ok(zh.every(b => !b.prompt.includes("native English")), "zh platform must not get the English directive");
+});
+
+// ---- trend/persona/seo 独立结构化 pre-pass ----
+// 按 prompt 内容分流：pre-pass（含 angles/voice/keywords schema）返回对应结构；其余视为 copy。
+function enrichmentRouter(copyPrompts, prePassPrompts) {
+  return (url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.mode === "image") return jsonResponse({ imageUrl: "data:image/png;base64,IMG" });
+    const p = body.prompt || "";
+    if (p.includes('"angles"')) {
+      if (prePassPrompts) prePassPrompts.push(p);
+      return jsonResponse({ text: JSON.stringify({ angles: ["热点角度A", "热点角度B", "热点角度C"] }) });
+    }
+    if (p.includes('"voice"')) {
+      if (prePassPrompts) prePassPrompts.push(p);
+      return jsonResponse({ text: JSON.stringify({ voice: "邻家闺蜜真诚安利", phrases: ["亲测", "踩过坑"] }) });
+    }
+    if (p.includes('"keywords"')) {
+      if (prePassPrompts) prePassPrompts.push(p);
+      return jsonResponse({ text: JSON.stringify({ keywords: ["补水", "敏感肌"], hashtags: ["#补水面膜", "#敏感肌"] }) });
+    }
+    if (copyPrompts) copyPrompts.push(p);
+    return jsonResponse({ text: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) });
+  };
+}
+
+test("trend/persona/seo run as independent pre-passes; concrete output flows into copy prompt + aiMeta", async () => {
+  const copyPrompts = [];
+  const { fetchImpl } = makeFetch(enrichmentRouter(copyPrompts));
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "viral_content_engine_v1", // 含 trend + persona + seo
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+  // aiMeta 记录三 pass 成功
+  assert.deepEqual(result.aiMeta.prePasses, { trend: true, persona: true, seo: true });
+  // 每条 copy prompt 注入 concrete 输出（保留 label + 具体内容）
+  assert.equal(copyPrompts.length, 3);
+  assert.ok(copyPrompts.every(p => p.includes("选题角度") && p.includes("热点角度A")), "trend concrete angle injected");
+  assert.ok(copyPrompts.every(p => p.includes("人设口吻") && p.includes("邻家闺蜜真诚安利")), "persona concrete voice injected");
+  assert.ok(copyPrompts.every(p => p.includes("搜索优化") && p.includes("#补水面膜")), "seo concrete tag injected");
+  // copyApplied 不变（提质不增量）
+  assert.equal(result.aiMeta.copyApplied, result.variants.length);
+});
+
+test("a failed pre-pass falls back to the generic guidance; copy still applies", async () => {
+  const copyPrompts = [];
+  const { fetchImpl } = makeFetch((url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.mode === "image") return jsonResponse({ imageUrl: "data:image/png;base64,IMG" });
+    const p = body.prompt || "";
+    if (p.includes('"angles"') || p.includes('"voice"') || p.includes('"keywords"')) {
+      return jsonResponse({ text: "not json at all" }); // pre-pass 解析失败
+    }
+    copyPrompts.push(p);
+    return jsonResponse({ text: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) });
+  });
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "viral_content_engine_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+  assert.deepEqual(result.aiMeta.prePasses, { trend: false, persona: false, seo: false });
+  // 回退泛指令：label 在，但不含 concrete 标记
+  assert.ok(copyPrompts.every(p => p.includes("选题角度") && !p.includes("已生成候选")), "trend fell back to generic");
+  assert.ok(copyPrompts.every(p => p.includes("搜索优化") && !p.includes("已生成，请采用")), "seo fell back to generic");
+  assert.equal(result.aiMeta.copyApplied, result.variants.length);
+});
+
+test("a skill without trend/persona/seo runs no pre-pass (aiMeta.prePasses all false)", async () => {
+  const { fetchImpl } = makeFetch((url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.mode === "image") return jsonResponse({ imageUrl: "data:image/png;base64,IMG" });
+    return jsonResponse({ text: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) });
+  });
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "露营灯", platform: "小红书" }),
+    skill: {
+      id: "syn_copy_only",
+      name: "syn",
+      category: "Flow",
+      stage: "manual",
+      estimatedCredits: 12,
+      formats: ["文案"],
+      agents: ["copy", "qa"],
+      palette: ["#8bd3ff"],
+      promise: "x",
+      bestFor: ""
+    },
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+  assert.deepEqual(result.aiMeta.prePasses, { trend: false, persona: false, seo: false });
+});
+
+test("pre-pass prompt output language follows preset.lang (en platform → English note)", async () => {
+  const prePassPrompts = [];
+  const { fetchImpl } = makeFetch(enrichmentRouter([], prePassPrompts));
+  await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "Portable light", platform: "YouTube Shorts", targetAudience: "creators" }),
+    skillId: "viral_content_engine_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+  assert.ok(prePassPrompts.length > 0);
+  assert.ok(prePassPrompts.every(p => p.includes("English")), "en platform pre-pass prompt should carry the English output note");
 });
