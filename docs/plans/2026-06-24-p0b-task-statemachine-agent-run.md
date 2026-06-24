@@ -1,13 +1,13 @@
 ---
 title: "P0-B 任务状态机 + Agent run DAG"
 type: sprint
-status: planning
+status: completed
 created: "2026-06-24"
 updated: "2026-06-24"
 status_note: "draft→planning：用户已确认 credits 照旧不退款 + 其余 5 决策按推荐锁定，进 Work"
 checkpoints: 0
 tasks_total: 6
-tasks_completed: 0
+tasks_completed: 6
 tags: [sprint, p0, lifecycle, state-machine, agent-run, flow]
 aliases: ["p0b-task-statemachine", "任务状态机"]
 goal: "给创作任务真实的生命周期：用显式、可持久化的 task + 每 agent 状态机（queued→running→completed|failed）取代硬编码的 status:'completed'/progress:100，由一个依赖序运行器走 Flow DAG 驱动；失败成为一等公民（保留已成功 agent 的 ready artifacts + 重试），状态跨 reload 存活并在启动时调和孤儿 running 任务。"
@@ -195,7 +195,18 @@ related:
 P0：三模式同构(grep 无 flow.mode)、失败 task 仍导出 ready、credits 不重复计、迁移幂等、reload 调和不卡死。
 P1：node.status 真实推进、retry 恰好一次扣费、UI 四态无裸字符串、mock executor 离线确定性。
 
-## Phase 5: Compound 预期（占位）
+## Phase 4: Review 结果
 
-- 任务从「伪完成」升级为真实生命周期，为后续真异步执行 / agent_runs 表 / credit reserve-settle 铺底。
-- DAG 运行器复用 flow/model.js Kahn 拓扑，证明 Flow 图是三模式统一的正确底座。
+- 三模式同构：运行器 `driveCreativeTask` 只吃 skill、不读 flow.mode（grep 确认仅注释/flow→skill stage 标签引用）。
+- 失败 task 仍导出 ready artifacts + qa-report（T3 测试断言）；video 仍 deferred（未触）。
+- credits 重试恰好扣一次（T4 测试断言）；计数锁定 variants/exports=3（T2 测试断言）。
+- 无 dead code（删 buildAgentEvents）；CanvasStudio 未被引入 domain/ai。
+- 残留 `status:"completed"` 字面量仅 createInitialState 种子 + orchestrator 记录（值同枚举，非生命周期路径，可接受）。
+- 全程 TDD（每 task RED→GREEN）；`npm test` 231/229 pass/2 skip/0 fail；`npm run build` 沙箱外 exit 0。
+
+## Phase 5: Compound 记录
+
+- **任务从「伪完成」升级为真实生命周期**：queued→running→completed|failed，失败一等公民 + retry-from-failed + 启动调和。
+- **运行器复用 flow/model.js Kahn 拓扑**，证明 Flow 图是三模式统一的正确底座；plan/drive 分离 + executor seam 为后续真异步执行 / agent_runs 表 / credit reserve-settle 铺底。
+- **沉淀**：执行生命周期词汇集中在 `lib/lifecycle.js`（与 artifacts 的交付物状态正交）；新增 aiMeta/artifact error 一律经 `sanitizeArtifactError`（见 [[aicrew-persist-sanitization-blindspot]]）。
+- 下一步候选：真异步 executor 路由（AI 逐 agent）/ credit-system reserve-settle / 并行分支执行。
