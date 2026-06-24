@@ -669,3 +669,42 @@ test("platform presets declare lang (zh for 抖音/小红书, en for Western); e
     assert.ok(byId[id].copyRules.ctaExamples.every(c => hasCJK(c)), `${id} CTA examples should stay Chinese`);
   }
 });
+
+// ---- variant 扩量（可配置变体数 + A/B 标记）----
+test("default variantCount stays 3 (backward compatible); each variant carries an abLabel", () => {
+  const task = runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "NovaGlow Lamp", platform: "抖音" }),
+    skillId: "ecom_tiktok_product_ad_v1",
+    brandKit: defaultBrandKit
+  });
+  assert.equal(task.variants.length, 3); // 默认仍 3
+  assert.deepEqual(task.variants.map(v => v.abLabel), ["A", "B", "C"]);
+});
+
+test("variantCount expands variants + exports end-to-end and keeps qa >= 80", () => {
+  const task = runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "NovaGlow Lamp", platform: "抖音" }),
+    skillId: "ecom_tiktok_product_ad_v1",
+    brandKit: defaultBrandKit,
+    variantCount: 5
+  });
+  assert.equal(task.variants.length, 5);
+  assert.equal(task.exports.length, 5); // 导出随变体数派生
+  assert.deepEqual(task.variants.map(v => v.abLabel), ["A", "B", "C", "D", "E"]);
+  // 前 3 角度逐字不变（守既有断言）
+  assert.equal(task.variants[0].name, "痛点直击");
+  // 扩量变体也满足 hookStrength floor + qa
+  assert.ok(task.variants.every(v => v.metrics.hookStrength >= 80));
+  assert.ok(task.qa.overallScore >= 80);
+});
+
+test("variantCount clamps out-of-range values (>pool→pool cap, 0/NaN→3)", () => {
+  const run = count => runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "Lamp", platform: "抖音" }),
+    skillId: "ecom_tiktok_product_ad_v1",
+    variantCount: count
+  }).variants.length;
+  assert.equal(run(99), 6); // 角度池上限
+  assert.equal(run(0), 3); // 0/NaN → 默认 3
+  assert.equal(run(1), 1);
+});
