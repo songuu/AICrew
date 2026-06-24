@@ -771,8 +771,10 @@ test("trend/persona/seo run as independent pre-passes; concrete output flows int
     aiConfig: systemConfig(),
     fetchImpl
   });
-  // aiMeta 记录三 pass 成功
-  assert.deepEqual(result.aiMeta.prePasses, { trend: true, persona: true, seo: true });
+  // aiMeta.prePasses 存实际结构化内容（不只 bool）
+  assert.deepEqual(result.aiMeta.prePasses.trend, { angles: ["热点角度A", "热点角度B", "热点角度C"] });
+  assert.equal(result.aiMeta.prePasses.persona.voice, "邻家闺蜜真诚安利");
+  assert.ok(Array.isArray(result.aiMeta.prePasses.seo.keywords) && result.aiMeta.prePasses.seo.keywords.length);
   // 每条 copy prompt 注入 concrete 输出（保留 label + 具体内容）
   assert.equal(copyPrompts.length, 3);
   assert.ok(copyPrompts.every(p => p.includes("选题角度") && p.includes("热点角度A")), "trend concrete angle injected");
@@ -780,6 +782,38 @@ test("trend/persona/seo run as independent pre-passes; concrete output flows int
   assert.ok(copyPrompts.every(p => p.includes("搜索优化") && p.includes("#补水面膜")), "seo concrete tag injected");
   // copyApplied 不变（提质不增量）
   assert.equal(result.aiMeta.copyApplied, result.variants.length);
+});
+
+test("pre-pass output is surfaced as concrete agent artifacts; domain (no-AI) stays static", () => {
+  // domain 路径：agent artifact 为静态串（buildAgentArtifact），不受 AI 层影响（immutability）。
+  const domainTask = runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "viral_content_engine_v1"
+  });
+  const domainTrend = domainTask.agents.find(a => a.id === "trend").artifact;
+  assert.ok(domainTrend.startsWith("Trend:"), "domain trend artifact stays static");
+});
+
+test("AI run overrides trend/persona/seo agent artifacts with concrete content (immutable)", async () => {
+  const { fetchImpl } = makeFetch(enrichmentRouter([]));
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "viral_content_engine_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+  const trendArt = result.agents.find(a => a.id === "trend").artifact;
+  const personaArt = result.agents.find(a => a.id === "persona").artifact;
+  const seoArt = result.agents.find(a => a.id === "seo").artifact;
+  assert.ok(trendArt.includes("选题角度（AI 生成）") && trendArt.includes("热点角度A"), "trend artifact surfaced");
+  assert.ok(personaArt.includes("人设口吻（AI 生成）") && personaArt.includes("邻家闺蜜真诚安利"), "persona artifact surfaced");
+  assert.ok(seoArt.includes("搜索优化（AI 生成）") && seoArt.includes("#补水面膜"), "seo artifact surfaced");
+  // 非 enrichment 节点 artifact 不被改（如 brief 仍静态）
+  const briefArt = result.agents.find(a => a.id === "brief").artifact;
+  assert.ok(briefArt.startsWith("Brief:"), "non-enrichment agents keep static artifact");
+  // 所有 agent artifact 仍 truthy string（契约）
+  assert.ok(result.agents.every(a => typeof a.artifact === "string" && a.artifact.length));
 });
 
 test("a failed pre-pass falls back to the generic guidance; copy still applies", async () => {
@@ -801,7 +835,7 @@ test("a failed pre-pass falls back to the generic guidance; copy still applies",
     aiConfig: systemConfig(),
     fetchImpl
   });
-  assert.deepEqual(result.aiMeta.prePasses, { trend: false, persona: false, seo: false });
+  assert.deepEqual(result.aiMeta.prePasses, { trend: null, persona: null, seo: null });
   // 回退泛指令：label 在，但不含 concrete 标记
   assert.ok(copyPrompts.every(p => p.includes("选题角度") && !p.includes("已生成候选")), "trend fell back to generic");
   assert.ok(copyPrompts.every(p => p.includes("搜索优化") && !p.includes("已生成，请采用")), "seo fell back to generic");
@@ -832,7 +866,7 @@ test("a skill without trend/persona/seo runs no pre-pass (aiMeta.prePasses all f
     aiConfig: systemConfig(),
     fetchImpl
   });
-  assert.deepEqual(result.aiMeta.prePasses, { trend: false, persona: false, seo: false });
+  assert.deepEqual(result.aiMeta.prePasses, { trend: null, persona: null, seo: null });
 });
 
 test("pre-pass prompt output language follows preset.lang (en platform → English note)", async () => {
