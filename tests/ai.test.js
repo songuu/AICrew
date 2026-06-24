@@ -18,6 +18,7 @@ import {
 import { generateText, generateImage, generateVideo, testConnection } from "../lib/ai/providers.js";
 import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
 import { runCreativeWorkflow, defaultBrandKit, normalizeBrief } from "../lib/domain.js";
+import { TASK_STATUS } from "../lib/lifecycle.js";
 
 function memStorage() {
   const map = new Map();
@@ -456,6 +457,35 @@ test("a single variant image failure is isolated and recorded in aiMeta", async 
   assert.equal(result.aiMeta.copyApplied, 3);
   assert.equal(result.aiMeta.imageErrors.length, 1);
   assert.equal(result.variants.filter(variant => variant.imageUrl).length, 2);
+});
+
+test("AI total image failure marks the visual agent failed and settles the task failed (copy still applies)", async () => {
+  const failAllImages = (url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.mode === "image") {
+      return jsonResponse({ error: { message: "img upstream 500" } }, { ok: false, status: 500 });
+    }
+    return jsonResponse({ text: JSON.stringify({ hook: "h", caption: "c", hashtags: ["#a"] }) });
+  };
+  const { fetchImpl } = makeFetch(failAllImages);
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+
+  assert.equal(result.aiMeta.imageAppliedCount, 0);
+  assert.ok(result.aiMeta.imageErrors.length > 0);
+  // 全图失败 → 任务失败 + visual agent 失败
+  assert.equal(result.status, TASK_STATUS.failed);
+  const visual = result.agents.find(agent => agent.id === "visual");
+  assert.ok(visual, "rednote 应含 visual agent");
+  assert.equal(visual.status, TASK_STATUS.failed);
+  assert.ok(visual.error && visual.error.length > 0);
+  // 文案仍成功（部分能力不被整单拖垮）
+  assert.equal(result.aiMeta.copyApplied, 3);
 });
 
 test("provider error carrying a leaked token is redacted before it reaches aiMeta (no secret in persisted state)", async () => {

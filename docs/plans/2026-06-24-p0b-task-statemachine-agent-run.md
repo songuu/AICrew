@@ -177,10 +177,10 @@ related:
 |---|---|---|---|
 | T1 生命周期枚举 + agent step 字段 | ✅ done | `lib/lifecycle.js`(新)、`lib/domain.js`(buildAgentStep 加 status 参数+生命周期字段，默认 completed 保兼容)、`tests/lifecycle.test.js`(新) | `npm test` 221/219 pass/2 skip/0 fail；4 新测试绿；无回归 |
 | T2 plan/drive 拆分 + 顺序运行器 | ✅ done | `lib/domain.js`(planCreativeTask + driveCreativeTask + defaultAgentExecutor seam + 同步包装器；删 dead buildAgentEvents)、`tests/task-runner.test.js`(新) | `npm test` 225/223 pass/2 skip/0 fail；4 新测试绿；结构同构保持(三模式经 skill.agents 顺序=拓扑序，drive 不读 flow.mode) |
-| T3 失败一等公民 | ⬜ 待开始 | — | — |
-| T4 retry from failed | ⬜ | — | — |
-| T5 status 持久化 + 启动调和 | ⬜ | — | — |
-| T6 AgentTimeline 四态 UI | ⬜ | — | — |
+| T3 失败一等公民 | ✅ done | `lib/domain.js`(markAgentFailed + driveCreativeTask try/catch：failed+脱敏 error、下游留 queued、task 落 failed 仍建产物)、`lib/ai/workflow.js`(全图失败→visual failed+task failed、灾难性 catch→failed)、tests | `npm test` 227/225；2 新测试绿。注：AI 仍 post-hoc enrichment，逐 agent AI executor 路由后续细化(seam 已就位) |
+| T4 retry from failed | ✅ done | `lib/domain.js`(retryAgentStep 改走 running→completed\|failed + 可注入 executor + 解封下游 + 重新结算 status；扣费/事件恰好一次) | `npm test` 229/227；2 新测试绿；back-compat(completed 任务重试不变) |
+| T5 status 持久化 + 启动调和 | ⬜ 待开始 | — | — |
+| T6 AgentTimeline 四态 UI | ⬜ 待开始 | — | — |
 
 ## Phase 4: Review Checklist（占位，Work 后填）
 
