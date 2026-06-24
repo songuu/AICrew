@@ -14,6 +14,7 @@ import {
   scoreHookStrength,
   mergeCreativeParams,
   normalizeBrief,
+  normalizeStateShape,
   orchestratorAgent,
   parseBriefText,
   platformPresets,
@@ -717,6 +718,24 @@ test("variantCount clamps out-of-range values (>pool→pool cap, 0/NaN→3)", ()
   assert.equal(run(1), 1);
 });
 
+test("normalizes legacy snapshots before UI render", () => {
+  const state = normalizeStateShape({
+    workspace: { credits: 120 },
+    tasks: undefined,
+    projects: null,
+    assets: undefined,
+    brandKit: { name: "Legacy Brand" }
+  });
+
+  assert.equal(state.workspace.credits, 120);
+  assert.equal(state.workspace.monthlyCredits, 5000);
+  assert.equal(state.brandKit.name, "Legacy Brand");
+  assert.ok(Array.isArray(state.tasks));
+  assert.ok(Array.isArray(state.projects));
+  assert.ok(Array.isArray(state.assets));
+  assert.ok(state.tasks.length > 0);
+  assert.ok(state.assets.length > 0);
+});
 test("locks generated tasks without mutating the original state", () => {
   const state = createInitialState();
   const taskId = state.tasks[0].id;

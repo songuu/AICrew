@@ -11,6 +11,7 @@ import {
   makeId,
   modelRoutes,
   normalizeBrief,
+  normalizeStateShape,
   parseBriefText,
   reconcileInterruptedTasks,
   reviseVariantHook,
@@ -323,7 +324,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
 
       if (!alive) return;
       // 启动调和：被 reload 打断的孤儿 running/queued task → failed-interrupted，避免永久卡「运行中」。
-      const nextState = reconcileInterruptedTasks({ ...baseState, brandKit });
+      const nextState = reconcileInterruptedTasks(normalizeStateShape({ ...baseState, brandKit }));
       setState(nextState);
       setSelectedTaskId(nextState.tasks?.[0]?.id || null);
       setSelectedVariantId(nextState.tasks?.[0]?.variants?.[0]?.id || null);
