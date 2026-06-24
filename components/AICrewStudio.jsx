@@ -612,7 +612,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
 
   function exportVariant() {
     if (!project || !activeVariant) return;
-    const record = buildExportRecord(project, activeVariant, task?.brief.platform || "抖音");
+    const record = buildExportRecord(project, activeVariant, task?.brief.platform || "抖音", { brief: task?.brief, taskArtifacts: task?.artifacts });
     setState(current => ({
       ...current,
       exports: [record, ...current.exports]
