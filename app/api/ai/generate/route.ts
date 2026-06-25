@@ -1,5 +1,6 @@
 import { connectionFor, createSystemAiRuntime, resolveSystemModel } from "../../../../lib/ai/server-config.js";
 import { generateText, generateImage, generateVideo } from "../../../../lib/ai/providers.js";
+import { AiRouteInputError, assertAiRouteRateLimit, normalizeAiRouteBody, publicAiRouteError, rateLimitKeyFromRequest, readBoundedJsonBody, sanitizeImageSize } from "../../../../lib/ai/routeGuard.js";
 
 type RouteConnection = Record<string, unknown>;
 type RouteSignal = AbortSignal | null | undefined;
@@ -26,10 +27,6 @@ function json(data: unknown, status = 200) {
   });
 }
 
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-
 export async function POST(request: Request) {
   const runtime = createSystemAiRuntime();
   if (!runtime.configured) {
@@ -38,21 +35,23 @@ export async function POST(request: Request) {
 
   let body;
   try {
-    body = await request.json();
-  } catch {
-    return json({ error: "请求 JSON 无效" }, 400);
+    assertAiRouteRateLimit(rateLimitKeyFromRequest(request));
+    body = normalizeAiRouteBody(await readBoundedJsonBody(request));
+  } catch (error) {
+    const status = error instanceof AiRouteInputError ? error.status : 400;
+    return json({ error: publicAiRouteError(error) }, status);
   }
 
   try {
-    const mode = body?.mode || "text";
-    const route = resolveSystemModel(runtime, mode, body?.modelId || "auto");
+    const mode = body.mode;
+    const route = resolveSystemModel(runtime, mode, body.modelId);
     const connection = connectionFor(runtime, route);
 
     if (mode === "text") {
       const text = await generateTextForRoute(connection, {
-        system: body?.system || "",
-        prompt: body?.prompt || "",
-        maxTokens: body?.maxTokens || 1024,
+        system: body.system,
+        prompt: body.prompt,
+        maxTokens: body.maxTokens,
         signal: request.signal
       });
       return json({ text, model: route.id, providerName: runtime.providerName });
@@ -60,8 +59,8 @@ export async function POST(request: Request) {
 
     if (mode === "image") {
       const imageUrl = await generateImageForRoute(connection, {
-        prompt: body?.prompt || "",
-        size: route.size || body?.size || "1024x1024",
+        prompt: body.prompt,
+        size: sanitizeImageSize(route.size || body.size),
         signal: request.signal
       });
       return json({ imageUrl, model: route.id, providerName: runtime.providerName });
@@ -69,8 +68,8 @@ export async function POST(request: Request) {
 
     if (mode === "video") {
       const video = await generateVideoForRoute(connection, {
-        prompt: body?.prompt || "",
-        imageUrl: body?.imageUrl || "",
+        prompt: body.prompt,
+        imageUrl: body.imageUrl,
         signal: request.signal
       });
       return json({ ...video, model: route.id, providerName: runtime.providerName });
@@ -78,7 +77,7 @@ export async function POST(request: Request) {
 
     return json({ error: `不支持的 AI 模式：${mode}` }, 400);
   } catch (error) {
-    return json({ error: errorMessage(error) }, 500);
+    return json({ error: publicAiRouteError(error) }, 500);
   }
 }
 

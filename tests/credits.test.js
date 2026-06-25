@@ -138,3 +138,54 @@ test("reconcileWallet fails when wallet cache diverges from active reservations"
     }
   );
 });
+
+
+test("reserve is idempotent for the same idempotency key and rejects duplicate reservation ids", () => {
+  const wallet = createCreditWallet({ id: "wallet-6", available: 100 });
+  const reserved = reserveCredits(wallet, { amount: 30, reservationId: "reservation-7", idempotencyKey: "same-key" });
+  const repeated = reserveCredits(reserved.wallet, { amount: 30, reservationId: "reservation-7", idempotencyKey: "same-key" });
+
+  assert.equal(repeated.idempotent, true);
+  assert.equal(repeated.wallet.available, 70);
+  assert.equal(repeated.wallet.reserved, 30);
+  assert.equal(repeated.wallet.ledger.length, 1);
+  assert.throws(
+    () => reserveCredits(repeated.wallet, { amount: 10, reservationId: "reservation-7", idempotencyKey: "other-key" }),
+    /already exists/
+  );
+});
+
+test("settle rejects actual usage that exceeds the reserved amount", () => {
+  const wallet = createCreditWallet({ id: "wallet-7", available: 100 });
+  const reserved = reserveCredits(wallet, { amount: 40, reservationId: "reservation-8" });
+
+  assert.throws(
+    () => settleReservation(reserved.wallet, "reservation-8", { actualAmount: 41 }),
+    error => {
+      assert.ok(error instanceof CreditAccountingError);
+      assert.equal(error.code, "ACTUAL_EXCEEDS_RESERVED");
+      assert.equal(error.context.actualAmount, 41);
+      assert.equal(error.context.reservedAmount, 40);
+      return true;
+    }
+  );
+});
+
+test("createCreditWallet rehydrates opening balance from settled reservations", () => {
+  const wallet = createCreditWallet({ id: "wallet-8", available: 120 });
+  const settled = settleReservation(
+    reserveCredits(wallet, { amount: 50, reservationId: "reservation-9" }).wallet,
+    "reservation-9",
+    { actualAmount: 35 }
+  );
+  const rehydrated = createCreditWallet({
+    id: "wallet-8",
+    available: settled.wallet.available,
+    reserved: settled.wallet.reserved,
+    reservations: settled.wallet.reservations,
+    ledger: settled.wallet.ledger
+  });
+
+  assert.equal(rehydrated.openingBalance, 120);
+  assert.doesNotThrow(() => reconcileWallet(rehydrated));
+});

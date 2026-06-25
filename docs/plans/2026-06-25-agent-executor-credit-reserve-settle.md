@@ -105,7 +105,7 @@ deferred: []
 | T2 | done | Routed AI enhancement through per-agent executor registry in `lib/ai/workflow.js`; exposed `aiMeta.agentExecutions`. |
 | T3 | done | Reused existing domain executor seam; added `settleTaskCreditsInState` to bridge task lifecycle and credit reservation state. |
 | T4 | done | Workbench/Flow/retry now preflight available credits and commit via reserve->settle/release display cache. |
-| T5 | done | State shape now preserves `creditReservations` and `creditReservationLedger`; full DB authority remains deferred until auth/wallet API sprint. |
+| T5 | done | State API no longer accepts client credit authority; added minimal `/api/credits/transaction` server transaction to persist real consume ledger while full auth/bucket wallet remains deferred. |
 | T6 | done | Review and validation complete: targeted tests, full `npm test`, and `npm run build` passed. |
 
 ## Phase 4: Review
@@ -114,7 +114,7 @@ deferred: []
 
 - P0: none.
 - P1: initial integration could throw after generation when credits were insufficient; fixed by preflight quote checks before Workbench, Flow, and retry runs.
-- P2: full server-authoritative wallet/API remains outside this sprint; preserved as deferred work rather than pretending DB wallet is complete.
+- P2: full auth/bucket wallet remains outside this sprint; fixed the immediate persistence gap with a server-side idempotent credit transaction endpoint and kept snapshot PUT away from server-owned ledger.
 
 ### Review Notes
 
@@ -127,8 +127,11 @@ deferred: []
 
 - `node --test tests/credits.test.js tests/domain.test.js tests/task-runner.test.js tests/ai.test.js` -> 111/111 pass.
 - `node --test tests/domain.test.js tests/flow.test.js tests/task-runner.test.js tests/ai.test.js tests/credits.test.js` -> 153/153 pass.
-- `npm test` -> 247 pass / 2 skipped / 0 fail; skips are DB tests because `SUPABASE_DB_URL` is not configured.
-- `npm run build` -> Next.js production build passed.
+- Post-audit targeted: `node --test tests/credits.test.js tests/domain.test.js tests/ai.test.js tests/flow.test.js tests/ai-route-guard.test.js tests/state-repository.test.js` -> 164/164 pass.
+- Post-audit full: `npm test` -> 267 pass / 0 fail / 2 DB integration skipped (no `SUPABASE_DB_URL`).
+- Post-audit build: `npm run build` -> pass, includes `/api/credits/transaction`.
+- Pre-audit `npm test` -> 247 pass / 2 skipped / 0 fail; skips are DB tests because `SUPABASE_DB_URL` is not configured.
+- Pre-audit `npm run build` -> Next.js production build passed.
 
 Note: sandboxed Node test runner still fails with Windows `spawn EPERM`; validation above was run with escalated local process permissions.
 
@@ -142,7 +145,7 @@ Note: sandboxed Node test runner still fails with Windows `spawn EPERM`; validat
 
 ### Deferred
 
-- Move `creditReservations` / `creditReservationLedger` from snapshot payload to server-authoritative wallet tables/API.
+- Move demo scalar credits from `aicrew_workspaces.credits` to full wallet/bucket/reservation tables once auth lands.
 - Add bucket allocation/expiry semantics from the full credit-system design.
 - Add real auth scoped wallet migration before any money-backed orders/subscriptions.
 

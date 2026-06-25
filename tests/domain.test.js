@@ -27,11 +27,13 @@ import {
   runCreativeWorkflow,
   saveSkillFromProject,
   setTaskLocked,
+  reserveTaskCreditsInState,
   settleTaskCreditsInState,
   skills,
   skillGroups,
   skillsInGroup
 } from "../lib/domain.js";
+import { createCreditWallet, reconcileWallet } from "../lib/credits.js";
 
 test("normalizes incomplete brief with PRD defaults", () => {
   const brief = normalizeBrief({ productName: "Pocket Camera" });
@@ -750,7 +752,11 @@ test("settleTaskCreditsInState records reserve-settle while display balance uses
     credits: { estimated: 50, actual: 35 }
   };
 
-  const next = settleTaskCreditsInState(state, task, {
+  const reserved = reserveTaskCreditsInState(state, task, {
+    reservationId: "reservation-credit-1",
+    reserveAmount: 50
+  });
+  const next = settleTaskCreditsInState(reserved, task, {
     label: "Task settled",
     reservationId: "reservation-credit-1"
   });
@@ -778,7 +784,11 @@ test("settleTaskCreditsInState releases a failed task reservation without consum
     credits: { estimated: 50, actual: 35 }
   };
 
-  const next = settleTaskCreditsInState(state, task, {
+  const reserved = reserveTaskCreditsInState(state, task, {
+    reservationId: "reservation-credit-2",
+    reserveAmount: 50
+  });
+  const next = settleTaskCreditsInState(reserved, task, {
     label: "Task released",
     reservationId: "reservation-credit-2"
   });
@@ -789,6 +799,19 @@ test("settleTaskCreditsInState releases a failed task reservation without consum
   assert.deepEqual(next.creditReservationLedger.map(entry => entry.type), ["reserve", "release"]);
   assert.equal(next.creditLedger[0].type, "release");
   assert.equal(next.creditLedger[0].amount, 0);
+});
+
+test("settleTaskCreditsInState rejects settlement without an active reservation", () => {
+  const state = normalizeStateShape({
+    workspace: { credits: 120, monthlyCredits: 5000 },
+    creditLedger: []
+  });
+  const task = { id: "task-no-reserve", status: "completed", credits: { estimated: 50, actual: 35 } };
+
+  assert.throws(
+    () => settleTaskCreditsInState(state, task, { reservationId: "missing-reservation" }),
+    /active reservation/
+  );
 });
 
 test("removes an asset from state without touching the original", () => {
@@ -813,4 +836,63 @@ test("locks generated tasks without mutating the original state", () => {
 
   const unlocked = setTaskLocked(locked, taskId, false);
   assert.equal(canEditTask(unlocked.tasks[0]), true);
+});
+
+
+test("reserveTaskCreditsInState creates an active reservation before settlement", () => {
+  const state = normalizeStateShape({
+    workspace: { credits: 120, monthlyCredits: 5000 },
+    creditLedger: []
+  });
+  const task = { id: "task-active-reserve", status: "running", credits: { estimated: 50, actual: 0 } };
+
+  const reserved = reserveTaskCreditsInState(state, task, {
+    reservationId: "reservation-active-1",
+    reserveAmount: 50,
+    reason: "generation"
+  });
+
+  assert.equal(reserved.workspace.credits, 70);
+  assert.equal(reserved.workspace.reservedCredits, 50);
+  assert.equal(reserved.creditReservations[0].status, "reserved");
+  assert.deepEqual(reserved.creditReservationLedger.map(entry => entry.type), ["reserve"]);
+  assert.equal(reserved.creditLedger.length, 0, "active reserve should not create a display consume row");
+});
+
+test("settleTaskCreditsInState settles an existing active reservation and remains display-idempotent", () => {
+  const state = normalizeStateShape({
+    workspace: { credits: 120, monthlyCredits: 5000 },
+    creditLedger: []
+  });
+  const task = { id: "task-active-settle", status: "completed", credits: { estimated: 50, actual: 35 } };
+  const reserved = reserveTaskCreditsInState(state, task, {
+    reservationId: "reservation-active-2",
+    reserveAmount: 50,
+    reason: "generation"
+  });
+
+  const settled = settleTaskCreditsInState(reserved, task, {
+    label: "Task settled",
+    reservationId: "reservation-active-2",
+    reserveAmount: 50
+  });
+  const repeated = settleTaskCreditsInState(settled, task, {
+    label: "Task settled",
+    reservationId: "reservation-active-2",
+    reserveAmount: 50
+  });
+
+  assert.equal(settled.workspace.credits, 85);
+  assert.equal(settled.workspace.reservedCredits, 0);
+  assert.deepEqual(settled.creditReservationLedger.map(entry => entry.type), ["reserve", "settle"]);
+  assert.equal(repeated.workspace.credits, 85);
+  assert.equal(repeated.creditLedger.filter(entry => entry.reservationId === "reservation-active-2").length, 1);
+  assert.doesNotThrow(() => reconcileWallet(createCreditWallet({
+    id: repeated.workspace.id || "workspace_default",
+    available: repeated.workspace.credits,
+    reserved: repeated.workspace.reservedCredits,
+    openingBalance: repeated.workspace.creditOpeningBalance,
+    reservations: repeated.creditReservations,
+    ledger: repeated.creditReservationLedger
+  })));
 });

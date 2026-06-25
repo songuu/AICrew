@@ -9,16 +9,16 @@
 // 三者最终都把一个合法 Flow 交给 onRun(brief, flow, meta) 执行，产出契约完全一致。
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { agents, skills, skillGroups, skillsInGroup, parseBriefText, findPlatformPreset, platformPresets, mergeCreativeParams } from "../lib/domain.js";
+import { agents, skills, skillGroups, skillsInGroup, parseBriefText, findPlatformPreset, platformPresets, mergeCreativeParams, estimateCreditsForSkill } from "../lib/domain.js";
 import {
   createFlow,
   toggleAgent,
   reorderNode,
   orderedAgentIds,
   validateFlow,
-  estimateFlowCredits,
   hasAgent,
-  skillToFlow
+  skillToFlow,
+  flowToSkill
 } from "../lib/flow/model.js";
 import { routeIdeaToFlow } from "../lib/flow/router.js";
 import { resolveDirectorCommand } from "../lib/flow/director.js";
@@ -295,7 +295,14 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
 
   // credits / platform 估算以用户所选平台为准（参数即事实），创意文本仅作兜底。
   const platform = useMemo(() => findPlatformPreset(params.platform || parseBriefText(idea).platform), [params.platform, idea]);
-  const credits = useMemo(() => estimateFlowCredits(flow, platform.name), [flow, platform]);
+  const quoteBrief = useMemo(() => mergeCreativeParams(parseBriefText(idea), {
+    ...params,
+    materials: mergeMaterials(libraryMaterials, params.materials)
+  }), [idea, params, libraryMaterials]);
+  const credits = useMemo(() => estimateCreditsForSkill(quoteBrief, flowToSkill(flow, {
+    skillId: params.skillId || undefined,
+    name: skillNameFor(params.skillId) || "自定义编排"
+  })), [flow, quoteBrief, params.skillId]);
   const validity = useMemo(() => validateFlow(flow), [flow]);
   const orderedIds = orderedAgentIds(flow);
 

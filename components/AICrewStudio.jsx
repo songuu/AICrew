@@ -9,6 +9,7 @@ import {
   createInitialState,
   createProjectFromTask,
   estimateCredits,
+  estimateCreditsForSkill,
   makeId,
   modelRoutes,
   normalizeBrief,
@@ -19,6 +20,7 @@ import {
   reviseVariantHook,
   retryAgentStep,
   runCreativeWorkflow,
+  reserveTaskCreditsInState,
   settleTaskCreditsInState,
   saveSkillFromProject,
   setTaskLocked,
@@ -36,14 +38,13 @@ import {
 } from "../lib/ai/config.js";
 import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
 import { runFlow, runFlowWithAI } from "../lib/flow/execute.js";
-import { estimateFlowCredits } from "../lib/flow/model.js";
+import { flowToSkill } from "../lib/flow/model.js";
 import { stashVariantImages, rehydrateVariantImages, stashLibraryAssets, rehydrateLibraryAssets, IMAGE_STORE_KEY, STASH_UNBOUNDED } from "../lib/storage/imageStore.js";
 import { validateLibraryAsset, normalizeLibraryAsset, normalizeMaterial } from "../lib/storage/materialStore.js";
 import { assembleExportBundle } from "../lib/export/bundle.js";
 import { stripArtifactsForStorage } from "../lib/artifacts.js";
 import { loadBrandKit, saveBrandKit, normalizeBrandKit } from "../lib/brand/store.js";
 import * as remote from "../lib/storage/remote.js";
-import { generateImage } from "../lib/ai/providers.js";
 import { renderBrandImageHint } from "../lib/brand/prompt.js";
 import { CanvasStudio } from "./canvas/CanvasStudio.jsx";
 import { OrchestratorConsole } from "./OrchestratorConsole.jsx";
@@ -268,11 +269,14 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   // AI 平台配置来自 server env；浏览器只保存“选择哪个系统模型”的 id，不接收 token/baseURL。
   const [aiConfig, setAiConfig] = useState(() => normalizeSystemAiConfig());
   const [generating, setGenerating] = useState(false);
+  const [retryingAgentId, setRetryingAgentId] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [workbenchMode, setWorkbenchMode] = useState("auto");
   // 服务端可达门：仅当挂载时成功读到 server（snapshot 与 assets 均可达）才允许后续破坏性 replace-all 写，
   // 否则一旦 server 临时不可达就回退本地态、跳过云写，杜绝用空/降级态整覆写清空云端权威数据（评审 D 项）。
   const serverReadyRef = useRef(false);
+  const generatingRef = useRef(false);
+  const retryingAgentRef = useRef(null);
 
   useEffect(() => {
     let alive = true;
@@ -448,26 +452,175 @@ export function AICrewStudio({ initialView = "dashboard" }) {
     setState(current => removeAssetFromState(current, assetId));
     setReferencedAssetIds(current => current.filter(id => id !== assetId));
   }
-  function ensureCreditsBeforeRun(amount, label) {
-    const required = Number.isFinite(amount) ? Math.max(0, Math.trunc(amount)) : 0;
-    const available = Number.isFinite(state.workspace?.credits) ? Math.max(0, Math.trunc(state.workspace.credits)) : 0;
-    if (required <= 0 || available >= required) return true;
-    setState(current => ({
+  function addNotificationToState(current, notice) {
+    return {
       ...current,
       notifications: [
         {
           id: makeId("notice"),
-          level: "warning",
-          title: `${label} 需要 ${required} credits，当前可用 ${available}，请先充值或领取权益。`,
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          ...notice
         },
         ...current.notifications
       ]
+    };
+  }
+
+  function addCreditFailureNoticeToState(current, label, error) {
+    const detail = error instanceof Error ? error.message : String(error || "unknown error");
+    return addNotificationToState(current, {
+      level: "warning",
+      title: label + " 积分处理失败：" + detail
+    });
+  }
+
+  function ensureCreditsBeforeRun(amount, label) {
+    const required = Number.isFinite(amount) ? Math.max(0, Math.trunc(amount)) : 0;
+    const available = Number.isFinite(state.workspace?.credits) ? Math.max(0, Math.trunc(state.workspace.credits)) : 0;
+    if (required <= 0 || available >= required) return true;
+    setState(current => addNotificationToState(current, {
+      level: "warning",
+      title: label + " 需要 " + required + " credits，当前可用 " + available + "，差额 " + (required - available) + "。"
     }));
     navigate("billing");
     return false;
   }
-  function commitGeneratedTask(nextTask, projectName, creditLabel) {
+
+  function reservationTask(reservationId, reserveAmount, status = "running") {
+    return {
+      id: reservationId,
+      status,
+      credits: { estimated: reserveAmount, actual: 0 }
+    };
+  }
+
+  function reserveRunCredits(reservationId, reserveAmount, label, reason) {
+    try {
+      const nextState = reserveTaskCreditsInState(state, reservationTask(reservationId, reserveAmount), {
+        reservationId,
+        reserveAmount,
+        label,
+        reason
+      });
+      setState(nextState);
+      return true;
+    } catch (error) {
+      setState(current => addCreditFailureNoticeToState(current, label, error));
+      navigate("billing");
+      return false;
+    }
+  }
+
+  function releaseRunCredits(reservationId, reserveAmount, label, reason) {
+    setState(current => {
+      try {
+        return settleTaskCreditsInState(current, reservationTask(reservationId, reserveAmount, "failed"), {
+          reservationId,
+          reserveAmount,
+          actualAmount: 0,
+          release: true,
+          label,
+          reason
+        });
+      } catch (error) {
+        return addCreditFailureNoticeToState(current, label, error);
+      }
+    });
+  }
+  function mergeServerCreditTransaction(current, result) {
+    const entry = result?.ledgerEntry;
+    const nextCredits = Number.isFinite(result?.credits) ? result.credits : current.workspace.credits;
+    const nextLedger = entry
+      ? [entry, ...current.creditLedger.filter(item => item.id !== entry.id && !(item.reservationId === entry.reservationId && item.type === entry.type))]
+      : current.creditLedger;
+    return {
+      ...current,
+      workspace: {
+        ...current.workspace,
+        credits: nextCredits,
+        reservedCredits: 0,
+        creditOpeningBalance: Number.isFinite(result?.openingBalance) ? result.openingBalance : current.workspace.creditOpeningBalance
+      },
+      creditLedger: nextLedger
+    };
+  }
+
+  function syncCreditConsume({ reservationId, taskId, amount, label, reason }) {
+    const actualAmount = Number.isFinite(amount) ? Math.max(0, Math.trunc(amount)) : 0;
+    if (!serverReadyRef.current || actualAmount <= 0) return;
+    remote
+      .serializeWrite(async () => {
+        const result = await remote.applyCreditTransaction({
+          transactionId: "settle:" + reservationId,
+          type: "consume",
+          amount: -actualAmount,
+          label,
+          reservationId,
+          taskId,
+          reason
+        });
+        setState(current => (current ? mergeServerCreditTransaction(current, result) : current));
+      })
+      .catch(error => {
+        setState(current => current ? addCreditFailureNoticeToState(current, label + " 服务端同步", error) : current);
+      });
+  }
+
+  async function generateCanvasImage(prompt) {
+    const imagePrompt = [prompt, renderBrandImageHint(state.brandKit)].filter(Boolean).join("\n");
+    const response = await fetch(aiConfig.endpoint || basePath + "/api/ai/generate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        mode: "image",
+        modelId: aiConfig.selection?.image || "auto",
+        prompt: imagePrompt
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.imageUrl) throw new Error(data?.error || "AI image generation failed");
+    return data.imageUrl;
+  }
+
+  async function refreshAiConfig() {
+    const nextConfig = await fetchSystemAiConfig();
+    setAiConfig(nextConfig);
+  }
+
+  function updateAiSelection(selection) {
+    const nextSelection = normalizeAiSelection(selection, aiConfig);
+    saveAiSelection(nextSelection, aiConfig);
+    setAiConfig(current => ({ ...current, selection: nextSelection }));
+    if (serverReadyRef.current) remote.serializeWrite(() => remote.pushAiSelectionDoc(nextSelection)).catch(() => {});
+  }
+
+  function saveBrand(nextBrand) {
+    const brand = normalizeBrandKit(nextBrand);
+    saveBrandKit(brand);
+    setState(current => ({ ...current, brandKit: brand }));
+    if (serverReadyRef.current) remote.serializeWrite(() => remote.pushBrand(brand)).catch(() => {});
+  }
+
+  function updateProfile(event) {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+    setState(current => ({
+      ...current,
+      currentUser: {
+        ...current.currentUser,
+        name: String(data.name || current.currentUser.name),
+        email: String(data.email || current.currentUser.email)
+      },
+      workspace: {
+        ...current.workspace,
+        name: String(data.workspace || current.workspace.name)
+      }
+    }));
+  }
+
+  function commitGeneratedTask(nextTask, projectName, creditLabel, creditOptions = {}) {
+    const reservationId = creditOptions.reservationId || nextTask.id + ":generation";
+    const reserveAmount = creditOptions.reserveAmount || nextTask.credits?.estimated || nextTask.credits?.actual || 0;
     setState(current => {
       const nextProject = createProjectFromTask(nextTask, projectName);
       const nextState = {
@@ -483,24 +636,37 @@ export function AICrewStudio({ initialView = "dashboard" }) {
             createdAt: new Date().toISOString()
           })),
           ...current.exports
-        ],
-        notifications: [
-          {
-            id: makeId("notice"),
-            level: "success",
-            title: `${nextTask.brief.productName} 内容包已生成${
-              nextTask.aiMeta?.used ? `（${nextTask.aiMeta.provider} AI）` : ""
-            }`,
-            createdAt: new Date().toISOString()
-          },
-          ...current.notifications
         ]
       };
-      return settleTaskCreditsInState(nextState, nextTask, {
-        label: creditLabel,
-        reservationId: `${nextTask.id}:generation`,
-        reason: "generation"
-      });
+      try {
+        const settled = settleTaskCreditsInState(nextState, nextTask, {
+          label: creditLabel,
+          reservationId,
+          reserveAmount,
+          reason: creditOptions.reason || "generation"
+        });
+        queueMicrotask(() => syncCreditConsume({
+          reservationId,
+          taskId: nextTask.id,
+          amount: nextTask.credits?.actual,
+          label: creditLabel,
+          reason: creditOptions.reason || "generation"
+        }));
+        return addNotificationToState(settled, {
+          level: "success",
+          title: nextTask.brief.productName + " 内容包已生成" + (nextTask.aiMeta?.used ? "（" + nextTask.aiMeta.provider + " AI）" : "")
+        });
+      } catch (error) {
+        const released = settleTaskCreditsInState(current, reservationTask(reservationId, reserveAmount, "failed"), {
+          label: creditLabel + " reservation released",
+          reservationId,
+          reserveAmount,
+          actualAmount: 0,
+          release: true,
+          reason: creditOptions.reason || "generation"
+        });
+        return addCreditFailureNoticeToState(released, creditLabel, error);
+      }
     });
     setSelectedTaskId(nextTask.id);
     setSelectedVariantId(nextTask.variants[0]?.id || null);
@@ -508,17 +674,29 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   }
 
   // 已配置 AI → 走真实 LLM（+OpenAI 封面图）；否则回退确定性模拟。
-  // runCreativeWorkflowWithAI 内部已兜底，不会抛错；仍以 try/finally 保证 generating 复位。
+  // 先建立 active reservation，AI/模拟完成后只 settle/release 这条 reservation。
   async function runAndCommit(brief, skillId, projectName, creditLabel) {
-    const quote = estimateCredits(brief, skillId);
-    if (!ensureCreditsBeforeRun(quote.estimated, creditLabel)) return;
+    if (generatingRef.current) return;
+    generatingRef.current = true;
     setGenerating(true);
+    const quote = estimateCredits(brief, skillId);
+    const reservationId = makeId("reservation") + ":generation";
     try {
+      if (!ensureCreditsBeforeRun(quote.estimated, creditLabel)) return;
+      if (!reserveRunCredits(reservationId, quote.estimated, creditLabel, "generation")) return;
       const nextTask = isAiConfigured(aiConfig)
         ? await runCreativeWorkflowWithAI({ brief, skillId, brandKit: state.brandKit, aiConfig })
         : runCreativeWorkflow({ brief, skillId, brandKit: state.brandKit });
-      commitGeneratedTask(nextTask, projectName, creditLabel);
+      commitGeneratedTask(nextTask, projectName, creditLabel, {
+        reservationId,
+        reserveAmount: quote.estimated,
+        reason: "generation"
+      });
+    } catch (error) {
+      releaseRunCredits(reservationId, quote.estimated, creditLabel, "generation");
+      setState(current => addCreditFailureNoticeToState(current, creditLabel, error));
     } finally {
+      generatingRef.current = false;
       setGenerating(false);
     }
   }
@@ -541,20 +719,31 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   // Flow 编排执行：三模式控制台统一入口。与 runAndCommit 同样的 AI/模拟兜底与提交逻辑，
   // 区别仅在用 Flow 编排图（runFlow）而非预设 skillId 驱动管线。
   async function runFlowAndCommit(brief, flow, meta) {
-    const quote = estimateFlowCredits(flow, brief.platform);
-    if (!ensureCreditsBeforeRun(quote, `${brief.productName} 编排生成`)) return;
+    if (generatingRef.current) return;
+    generatingRef.current = true;
     setGenerating(true);
-    ingestBriefMaterials(brief);
+    const skill = flowToSkill(flow, meta);
+    const quote = estimateCreditsForSkill(brief, skill);
+    const creditLabel = brief.productName + " 编排生成（" + (meta?.category || "Flow") + "）";
+    const reservationId = makeId("reservation") + ":flow";
     try {
+      if (!ensureCreditsBeforeRun(quote.estimated, creditLabel)) return;
+      if (!reserveRunCredits(reservationId, quote.estimated, creditLabel, "flow")) return;
+      ingestBriefMaterials(brief);
       const nextTask = isAiConfigured(aiConfig)
         ? await runFlowWithAI({ brief, flow, brandKit: state.brandKit, aiConfig, meta })
         : runFlow({ brief, flow, brandKit: state.brandKit, meta });
       commitGeneratedTask(
         nextTask,
-        `${brief.productName} ${brief.platform} 编排`,
-        `${brief.productName} 编排生成（${meta?.category || "Flow"}）`
+        brief.productName + " " + brief.platform + " 编排",
+        creditLabel,
+        { reservationId, reserveAmount: quote.estimated, reason: "flow" }
       );
+    } catch (error) {
+      releaseRunCredits(reservationId, quote.estimated, creditLabel, "flow");
+      setState(current => addCreditFailureNoticeToState(current, creditLabel, error));
     } finally {
+      generatingRef.current = false;
       setGenerating(false);
     }
   }
@@ -566,67 +755,26 @@ export function AICrewStudio({ initialView = "dashboard" }) {
     runAndCommit(
       brief,
       data.skillId || "ecom_tiktok_product_ad_v1",
-      `${brief.productName} ${brief.platform} launch`,
-      `${brief.productName} generation`
+      brief.productName + " " + brief.platform + " launch",
+      brief.productName + " generation"
     );
   }
 
   function generateQuick(event) {
     event.preventDefault();
-    const text = new FormData(event.currentTarget).get("briefText");
-    const brief = parseBriefText(text);
-    runAndCommit(brief, "ecom_tiktok_product_ad_v1", `${brief.productName} quick campaign`, `${brief.productName} quick generation`);
-  }
-
-  async function refreshAiConfig() {
-    setAiConfig(await fetchSystemAiConfig());
-  }
-
-  function updateAiSelection(nextSelection) {
-    setAiConfig(current => {
-      const normalized = normalizeSystemAiConfig(current);
-      const selection = saveAiSelection(nextSelection, normalized); // 本地缓存
-      remote.pushAiSelectionDoc(selection).catch(() => {}); // Supabase 权威源（best-effort，本地已留底）
-      return { ...normalized, selection };
-    });
-  }
-
-  // 写穿 Supabase（权威）+ 本地 brandStore（离线缓存）并同步内存态；brandKit 由 store 归一化后回填。
-  function saveBrand(nextBrandKit) {
-    const normalized = saveBrandKit(nextBrandKit);
-    remote.pushBrand(normalized).catch(() => {});
-    setState(current => ({ ...current, brandKit: normalized }));
-  }
-
-  // 注入给画布的 AI 生成句柄：真调用 generateImage + 品牌审美提示。lib/canvas 不直接 import ai，保隔离。
-  async function generateCanvasImage(prompt) {
-    const hint = renderBrandImageHint(state.brandKit);
-    return generateImage(aiConfig, { prompt: hint ? `${prompt}。${hint}` : prompt });
-  }
-
-  function updateProfile(event) {
-    event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget).entries());
-    setState(current => ({
-      ...current,
-      currentUser: {
-        ...current.currentUser,
-        name: data.name,
-        email: data.email
-      },
-      workspace: {
-        ...current.workspace,
-        name: data.workspace
-      }
-    }));
+    const brief = parseBriefText(data.briefText || data.prompt);
+    runAndCommit(
+      brief,
+      data.skillId || "rednote_seeding_note_v1",
+      brief.productName + " quick campaign",
+      brief.productName + " quick generation"
+    );
   }
 
-  function reviseHook(event) {
-    event.preventDefault();
+  function reviseHook(nextHook) {
     if (!task || !activeVariant || !canEditTask(task)) return;
-    const instruction = new FormData(event.currentTarget).get("instruction") || "";
-    const revised = reviseVariantHook(activeVariant, instruction);
-    setSelectedVariantId(revised.id);
+    const revised = reviseVariantHook(activeVariant, nextHook);
     setState(current => {
       const nextTasks = current.tasks.map(item => {
         if (item.id !== task.id) return item;
@@ -655,45 +803,65 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   }
 
   function retryAgent(agentId) {
-    if (!task || !canEditTask(task)) return;
+    if (!task || !canEditTask(task) || retryingAgentRef.current) return;
     const targetAgent = task.agents.find(agent => agent.id === agentId);
     const retryCost = targetAgent?.cost || agentCatalog.find(agent => agent.id === agentId)?.cost || 8;
     if (!ensureCreditsBeforeRun(retryCost, "Agent retry: " + agentId)) return;
-    const { task: nextTask, cost } = retryAgentStep(task, agentId);
-    setState(current => {
-      const nextTasks = current.tasks.map(item => (item.id === task.id ? nextTask : item));
-      const nextProjects = current.projects.map(item =>
-        item.taskId === task.id
-          ? {
-              ...item,
-              status: nextTask.status,
-              updatedAt: nextTask.updatedAt,
-              qualityScore: nextTask.qa.overallScore
-            }
-          : item
-      );
-      const nextState = {
-        ...current,
-        tasks: nextTasks,
-        projects: nextProjects,
-        notifications: [
-          {
-            id: makeId("notice"),
-            level: "success",
-            title: "Agent 已重试：" + agentId,
-            createdAt: new Date().toISOString()
-          },
-          ...current.notifications
-        ]
-      };
-      return settleTaskCreditsInState(nextState, nextTask, {
-        label: "Agent retry: " + agentId,
-        reserveAmount: cost,
-        actualAmount: cost,
-        reservationId: `${nextTask.id}:retry:${agentId}:${makeId("reservation")}`,
-        reason: "retry"
+    const reservationId = task.id + ":retry:" + agentId + ":" + makeId("reservation");
+    retryingAgentRef.current = agentId;
+    setRetryingAgentId(agentId);
+    if (!reserveRunCredits(reservationId, retryCost, "Agent retry: " + agentId, "retry")) {
+      retryingAgentRef.current = null;
+      setRetryingAgentId(null);
+      return;
+    }
+    try {
+      const { task: nextTask, cost } = retryAgentStep(task, agentId);
+      setState(current => {
+        const nextTasks = current.tasks.map(item => (item.id === task.id ? nextTask : item));
+        const nextProjects = current.projects.map(item =>
+          item.taskId === task.id
+            ? {
+                ...item,
+                status: nextTask.status,
+                updatedAt: nextTask.updatedAt,
+                qualityScore: nextTask.qa.overallScore
+              }
+            : item
+        );
+        const nextState = {
+          ...current,
+          tasks: nextTasks,
+          projects: nextProjects
+        };
+        const settled = settleTaskCreditsInState(nextState, nextTask, {
+          label: "Agent retry: " + agentId,
+          reserveAmount: retryCost,
+          actualAmount: cost,
+          reservationId,
+          reason: "retry"
+        });
+        queueMicrotask(() => syncCreditConsume({
+          reservationId,
+          taskId: nextTask.id,
+          amount: cost,
+          label: "Agent retry: " + agentId,
+          reason: "retry"
+        }));
+        return addNotificationToState(settled, {
+          level: "success",
+          title: "Agent 已重试：" + agentId
+        });
       });
-    });
+    } catch (error) {
+      releaseRunCredits(reservationId, retryCost, "Agent retry: " + agentId, "retry");
+      setState(current => addCreditFailureNoticeToState(current, "Agent retry: " + agentId, error));
+    } finally {
+      setTimeout(() => {
+        retryingAgentRef.current = null;
+        setRetryingAgentId(null);
+      }, 0);
+    }
   }
 
   function addAsset(assetInput) {
@@ -790,6 +958,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               generating={generating}
               aiConfig={aiConfig}
               onRetryAgent={retryAgent}
+              retryingAgentId={retryingAgentId}
             />
           )}
           {view === "history" && (
@@ -819,6 +988,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               generating={generating}
               aiConfig={aiConfig}
               onRetryAgent={retryAgent}
+              retryingAgentId={retryingAgentId}
               onModeChange={setWorkbenchMode}
               onGenerateImage={isAiConfigured(aiConfig) ? generateCanvasImage : undefined}
               editSeed={editSeed}
@@ -1004,7 +1174,7 @@ function FloatingCommandLayer({ state, view, navigate, manualWorkbench }) {
   );
 }
 
-function Dashboard({ state, task, project, generateQuick, navigate, generating, aiConfig, onRetryAgent }) {
+function Dashboard({ state, task, project, generateQuick, navigate, generating, aiConfig, onRetryAgent, retryingAgentId }) {
   const completionRate = state.tasks.length
     ? Math.round((state.tasks.filter(item => item.status === "completed").length / state.tasks.length) * 100)
     : 0;
@@ -1053,7 +1223,7 @@ function Dashboard({ state, task, project, generateQuick, navigate, generating, 
             Open workbench
           </button>
         </div>
-        <AgentTimeline task={task} onRetry={onRetryAgent} locked={task?.locked} />
+        <AgentTimeline task={task} onRetry={onRetryAgent} locked={task?.locked} retryingAgentId={retryingAgentId} />
       </section>
       <section className="panel">
         <div className="panel-heading">
@@ -1093,6 +1263,7 @@ function Workbench({
   generating,
   aiConfig,
   onRetryAgent,
+  retryingAgentId,
   onModeChange,
   onGenerateImage,
   editSeed,
@@ -1188,7 +1359,7 @@ function Workbench({
           </div>
           <span className="status-chip">{task?.credits.actual || 0} credits</span>
         </div>
-        <AgentTimeline task={task} onRetry={onRetryAgent} locked={task?.locked} />
+        <AgentTimeline task={task} onRetry={onRetryAgent} locked={task?.locked} retryingAgentId={retryingAgentId} />
         <QaBox task={task} />
       </section>
         </>
@@ -1614,6 +1785,7 @@ function Exports({ state }) {
 }
 
 function Billing({ state }) {
+  const billingNotice = (state.notifications || []).find(item => item.level === "warning" && String(item.title || "").includes("credits"));
   return (
     <div className="page-grid two">
       <section className="panel billing-panel">
@@ -1626,6 +1798,7 @@ function Billing({ state }) {
             {state.workspace.credits} / {state.workspace.monthlyCredits}
           </span>
         </div>
+        {billingNotice && <div className="billing-alert">{billingNotice.title}</div>}
         <div className="credit-meter">
           <span style={{ width: `${Math.min(100, (state.workspace.credits / state.workspace.monthlyCredits) * 100)}%` }} />
         </div>
@@ -1927,7 +2100,7 @@ function statusLabel(status) {
   return TASK_STATUS_LABELS[status] || status || "";
 }
 
-function AgentTimeline({ task, onRetry, locked = false }) {
+function AgentTimeline({ task, onRetry, locked = false, retryingAgentId = null }) {
   if (!task) return <p className="empty-state">No active task</p>;
   const recentEvents = (task.events || []).slice(-4).reverse();
   return (
@@ -1955,8 +2128,8 @@ function AgentTimeline({ task, onRetry, locked = false }) {
                 <div className="agent-step-actions">
                   <span className={"agent-status agent-status--" + agent.status}>{statusLabel(agent.status)}</span>
                   {onRetry && !locked && agent.status === "failed" && (
-                    <button className="ghost-button slim" type="button" onClick={() => onRetry(agent.id)}>
-                      Retry
+                    <button className="ghost-button slim" type="button" onClick={() => onRetry(agent.id)} disabled={retryingAgentId === agent.id}>
+                      {retryingAgentId === agent.id ? "重试中…" : "Retry"}
                     </button>
                   )}
                 </div>

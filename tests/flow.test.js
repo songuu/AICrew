@@ -22,7 +22,7 @@ import {
 import { routeIdeaToFlow } from "../lib/flow/router.js";
 import { parseDirectorCommand, matchAgentInText } from "../lib/flow/director.js";
 import { runFlow, runFlowWithAI, flowToAiModes } from "../lib/flow/execute.js";
-import { runCreativeWorkflow, runCreativeWorkflowWithSkill, findSkill } from "../lib/domain.js";
+import { runCreativeWorkflow, runCreativeWorkflowWithSkill, findSkill, estimateCreditsForSkill, normalizeBrief } from "../lib/domain.js";
 import { computeFlowOverlay, FLOW_NODE_W, FLOW_NODE_H } from "../lib/flow/overlay.js";
 
 function makeAiFetch() {
@@ -179,6 +179,15 @@ test("estimateFlowCredits sums agent cost by platform multiplier", () => {
   const rednote = estimateFlowCredits(flow, "小红书"); // ×0.9
   assert.equal(tiktok, 12);
   assert.ok(rednote < tiktok);
+});
+
+test("flow quote can share the domain skill estimate for complex briefs", () => {
+  const flow = linearFlow(["copy", "visual"]);
+  const brief = normalizeBrief({ productName: "超长产品", platform: "小红书", sellingPoints: "A".repeat(260) });
+  const quote = estimateCreditsForSkill(brief, flowToSkill(flow, { name: "Manual" }));
+
+  assert.equal(quote.estimated, 32);
+  assert.notEqual(estimateFlowCredits(flow, brief.platform), quote.estimated, "legacy flow quote intentionally misses complexity");
 });
 
 // —— 中枢路由 ——

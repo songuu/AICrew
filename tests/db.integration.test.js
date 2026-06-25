@@ -10,6 +10,7 @@ const hasDb = typeof process.env.SUPABASE_DB_URL === "string" && process.env.SUP
 test("Supabase 数据层往返", { skip: hasDb ? false : "SUPABASE_DB_URL 未配置，跳过集成测试" }, async t => {
   const { getSql, closeSql, withDbRetry } = await import("../lib/db/client.js");
   const { saveStateSnapshot, loadStateSnapshot } = await import("../lib/db/repositories/state.js");
+  const { applyCreditTransaction } = await import("../lib/db/repositories/credits.js");
   const { saveAssets, loadAssets } = await import("../lib/db/repositories/assets.js");
   const { saveDocument, loadDocument } = await import("../lib/db/repositories/documents.js");
 
@@ -45,7 +46,7 @@ test("Supabase 数据层往返", { skip: hasDb ? false : "SUPABASE_DB_URL 未配
     const loaded = await loadStateSnapshot(workspaceId);
 
     assert.equal(loaded.workspace.name, "测试工作区");
-    assert.equal(loaded.workspace.credits, 1234);
+    assert.equal(loaded.workspace.credits, 5000, "客户端 credits 不应覆盖服务端余额");
     assert.equal(loaded.workspace.plan, "pro", "workspace.payload 兜底字段应保留");
     assert.equal(loaded.tasks.length, 2);
     assert.equal(loaded.tasks[0].id, "t-1");
@@ -53,7 +54,7 @@ test("Supabase 数据层往返", { skip: hasDb ? false : "SUPABASE_DB_URL 未配
     assert.deepEqual(loaded.tasks[0].variants, [{ id: "v-1", label: "A" }], "嵌套 variants 应原样保留");
     assert.equal(loaded.projects[0].id, "p-1");
     assert.equal(loaded.exports[0].id, "e-1");
-    assert.equal(loaded.creditLedger[0].amount, -10);
+    assert.equal(loaded.creditLedger.length, 0, "客户端 creditLedger 不应覆盖服务端账本");
     assert.equal(loaded.customSkills[0].name, "自定义技能");
     assert.ok(!("brandKit" in loaded), "brandKit 不应进入主快照（由 documents 单独存）");
   });
@@ -64,6 +65,34 @@ test("Supabase 数据层往返", { skip: hasDb ? false : "SUPABASE_DB_URL 未配
     assert.equal(loaded.tasks.length, 1);
     assert.equal(loaded.tasks[0].id, "only");
     assert.equal(loaded.projects.length, 0, "旧 project 应被整替换清除");
+  });
+
+  await t.test("applyCreditTransaction 幂等扣费且 snapshot PUT 不覆盖服务端账本", async () => {
+    const first = await applyCreditTransaction({
+      transactionId: "txn-1",
+      type: "consume",
+      amount: -37,
+      label: "server consume",
+      reservationId: "reservation-1",
+      taskId: "task-1"
+    }, workspaceId);
+    const repeated = await applyCreditTransaction({
+      transactionId: "txn-1",
+      type: "consume",
+      amount: -37,
+      label: "server consume",
+      reservationId: "reservation-1",
+      taskId: "task-1"
+    }, workspaceId);
+    assert.equal(first.credits, 4963);
+    assert.equal(repeated.credits, 4963);
+    assert.equal(repeated.idempotent, true);
+
+    await saveStateSnapshot({ workspace: { credits: 9999 }, tasks: [], projects: [], exports: [], creditLedger: [{ id: "fake", amount: 9999 }], customSkills: [] }, workspaceId);
+    const loaded = await loadStateSnapshot(workspaceId);
+    assert.equal(loaded.workspace.credits, 4963, "snapshot PUT 不应回滚服务端余额");
+    assert.equal(loaded.creditLedger.some(entry => entry.id === "txn-1"), true, "snapshot PUT 不应删除服务端账本");
+    assert.equal(loaded.creditLedger.some(entry => entry.id === "fake"), false, "客户端伪造账本不应写入");
   });
 
   await t.test("assets 往返 + 去重 + 脏项剔除", async () => {
