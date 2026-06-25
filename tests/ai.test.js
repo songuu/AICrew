@@ -538,6 +538,10 @@ test("enabledModes.image=false skips image generation entirely", async () => {
   assert.equal(result.aiMeta.imageAppliedCount, 0);
   assert.equal(result.aiMeta.imageApplied, false);
   assert.equal(result.aiMeta.copyApplied, 3);
+  const visualExecution = result.aiMeta.agentExecutions.find(execution => execution.agentId === "visual");
+  assert.equal(visualExecution?.status, "skipped");
+  assert.equal(visualExecution?.mode, "image");
+  assert.match(visualExecution?.summary || "", /disabled/);
   assert.ok(!calls.some(call => call.body.mode === "image"));
 });
 
@@ -827,6 +831,35 @@ function enrichmentRouter(copyPrompts, prePassPrompts) {
   };
 }
 
+
+test("AI agent executors route in agent order and expose execution metadata", async () => {
+  const { fetchImpl } = makeFetch(enrichmentRouter([]));
+  const result = await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skill: {
+      id: "syn_full_ai_route",
+      name: "syn full ai route",
+      category: "Flow",
+      stage: "manual",
+      estimatedCredits: 12,
+      formats: ["选题", "人设", "搜索", "文案", "封面"],
+      agents: ["trend", "persona", "seo", "copy", "visual"],
+      palette: ["#8bd3ff"],
+      promise: "x",
+      bestFor: ""
+    },
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl
+  });
+
+  assert.deepEqual(result.aiMeta.agentExecutions.map(execution => execution.agentId), ["trend", "persona", "seo", "copy", "visual"]);
+  assert.deepEqual(result.aiMeta.agentExecutions.map(execution => execution.mode), ["text", "text", "text", "text", "image"]);
+  assert.ok(result.aiMeta.agentExecutions.every(execution => execution.status === TASK_STATUS.completed));
+  assert.ok(result.aiMeta.agentExecutions.every(execution => typeof execution.summary === "string" && execution.summary.length > 0));
+  assert.equal(result.aiMeta.copyApplied, result.variants.length);
+  assert.equal(result.aiMeta.imageAppliedCount, result.variants.length);
+});
 test("trend/persona/seo run as independent pre-passes; concrete output flows into copy prompt + aiMeta", async () => {
   const copyPrompts = [];
   const { fetchImpl } = makeFetch(enrichmentRouter(copyPrompts));
@@ -875,6 +908,8 @@ test("AI run overrides trend/persona/seo agent artifacts with concrete content (
   assert.ok(trendArt.includes("选题角度（AI 生成）") && trendArt.includes("热点角度A"), "trend artifact surfaced");
   assert.ok(personaArt.includes("人设口吻（AI 生成）") && personaArt.includes("邻家闺蜜真诚安利"), "persona artifact surfaced");
   assert.ok(seoArt.includes("搜索优化（AI 生成）") && seoArt.includes("#补水面膜"), "seo artifact surfaced");
+  const prePassExecutions = result.aiMeta.agentExecutions.filter(execution => ["trend", "persona", "seo"].includes(execution.agentId));
+  assert.deepEqual(prePassExecutions.map(execution => execution.status), [TASK_STATUS.completed, TASK_STATUS.completed, TASK_STATUS.completed]);
   // 非 enrichment 节点 artifact 不被改（如 brief 仍静态）
   const briefArt = result.agents.find(a => a.id === "brief").artifact;
   assert.ok(briefArt.startsWith("Brief:"), "non-enrichment agents keep static artifact");

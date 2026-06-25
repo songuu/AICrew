@@ -8,6 +8,7 @@ import {
   createAsset,
   createInitialState,
   createProjectFromTask,
+  estimateCredits,
   makeId,
   modelRoutes,
   normalizeBrief,
@@ -18,6 +19,7 @@ import {
   reviseVariantHook,
   retryAgentStep,
   runCreativeWorkflow,
+  settleTaskCreditsInState,
   saveSkillFromProject,
   setTaskLocked,
   skills
@@ -34,6 +36,7 @@ import {
 } from "../lib/ai/config.js";
 import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
 import { runFlow, runFlowWithAI } from "../lib/flow/execute.js";
+import { estimateFlowCredits } from "../lib/flow/model.js";
 import { stashVariantImages, rehydrateVariantImages, stashLibraryAssets, rehydrateLibraryAssets, IMAGE_STORE_KEY, STASH_UNBOUNDED } from "../lib/storage/imageStore.js";
 import { validateLibraryAsset, normalizeLibraryAsset, normalizeMaterial } from "../lib/storage/materialStore.js";
 import { assembleExportBundle } from "../lib/export/bundle.js";
@@ -445,10 +448,29 @@ export function AICrewStudio({ initialView = "dashboard" }) {
     setState(current => removeAssetFromState(current, assetId));
     setReferencedAssetIds(current => current.filter(id => id !== assetId));
   }
+  function ensureCreditsBeforeRun(amount, label) {
+    const required = Number.isFinite(amount) ? Math.max(0, Math.trunc(amount)) : 0;
+    const available = Number.isFinite(state.workspace?.credits) ? Math.max(0, Math.trunc(state.workspace.credits)) : 0;
+    if (required <= 0 || available >= required) return true;
+    setState(current => ({
+      ...current,
+      notifications: [
+        {
+          id: makeId("notice"),
+          level: "warning",
+          title: `${label} 需要 ${required} credits，当前可用 ${available}，请先充值或领取权益。`,
+          createdAt: new Date().toISOString()
+        },
+        ...current.notifications
+      ]
+    }));
+    navigate("billing");
+    return false;
+  }
   function commitGeneratedTask(nextTask, projectName, creditLabel) {
     setState(current => {
       const nextProject = createProjectFromTask(nextTask, projectName);
-      return {
+      const nextState = {
         ...current,
         tasks: [nextTask, ...current.tasks],
         projects: [nextProject, ...current.projects],
@@ -462,20 +484,6 @@ export function AICrewStudio({ initialView = "dashboard" }) {
           })),
           ...current.exports
         ],
-        workspace: {
-          ...current.workspace,
-          credits: Math.max(0, current.workspace.credits - nextTask.credits.actual)
-        },
-        creditLedger: [
-          {
-            id: makeId("credit"),
-            type: "consume",
-            amount: -nextTask.credits.actual,
-            label: creditLabel,
-            createdAt: new Date().toISOString()
-          },
-          ...current.creditLedger
-        ],
         notifications: [
           {
             id: makeId("notice"),
@@ -488,6 +496,11 @@ export function AICrewStudio({ initialView = "dashboard" }) {
           ...current.notifications
         ]
       };
+      return settleTaskCreditsInState(nextState, nextTask, {
+        label: creditLabel,
+        reservationId: `${nextTask.id}:generation`,
+        reason: "generation"
+      });
     });
     setSelectedTaskId(nextTask.id);
     setSelectedVariantId(nextTask.variants[0]?.id || null);
@@ -497,6 +510,8 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   // 已配置 AI → 走真实 LLM（+OpenAI 封面图）；否则回退确定性模拟。
   // runCreativeWorkflowWithAI 内部已兜底，不会抛错；仍以 try/finally 保证 generating 复位。
   async function runAndCommit(brief, skillId, projectName, creditLabel) {
+    const quote = estimateCredits(brief, skillId);
+    if (!ensureCreditsBeforeRun(quote.estimated, creditLabel)) return;
     setGenerating(true);
     try {
       const nextTask = isAiConfigured(aiConfig)
@@ -526,6 +541,8 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   // Flow 编排执行：三模式控制台统一入口。与 runAndCommit 同样的 AI/模拟兜底与提交逻辑，
   // 区别仅在用 Flow 编排图（runFlow）而非预设 skillId 驱动管线。
   async function runFlowAndCommit(brief, flow, meta) {
+    const quote = estimateFlowCredits(flow, brief.platform);
+    if (!ensureCreditsBeforeRun(quote, `${brief.productName} 编排生成`)) return;
     setGenerating(true);
     ingestBriefMaterials(brief);
     try {
@@ -639,6 +656,9 @@ export function AICrewStudio({ initialView = "dashboard" }) {
 
   function retryAgent(agentId) {
     if (!task || !canEditTask(task)) return;
+    const targetAgent = task.agents.find(agent => agent.id === agentId);
+    const retryCost = targetAgent?.cost || agentCatalog.find(agent => agent.id === agentId)?.cost || 8;
+    if (!ensureCreditsBeforeRun(retryCost, "Agent retry: " + agentId)) return;
     const { task: nextTask, cost } = retryAgentStep(task, agentId);
     setState(current => {
       const nextTasks = current.tasks.map(item => (item.id === task.id ? nextTask : item));
@@ -652,24 +672,10 @@ export function AICrewStudio({ initialView = "dashboard" }) {
             }
           : item
       );
-      return {
+      const nextState = {
         ...current,
         tasks: nextTasks,
         projects: nextProjects,
-        workspace: {
-          ...current.workspace,
-          credits: Math.max(0, current.workspace.credits - cost)
-        },
-        creditLedger: [
-          {
-            id: makeId("credit"),
-            type: "consume",
-            amount: -cost,
-            label: "Agent retry: " + agentId,
-            createdAt: new Date().toISOString()
-          },
-          ...current.creditLedger
-        ],
         notifications: [
           {
             id: makeId("notice"),
@@ -680,6 +686,13 @@ export function AICrewStudio({ initialView = "dashboard" }) {
           ...current.notifications
         ]
       };
+      return settleTaskCreditsInState(nextState, nextTask, {
+        label: "Agent retry: " + agentId,
+        reserveAmount: cost,
+        actualAmount: cost,
+        reservationId: `${nextTask.id}:retry:${agentId}:${makeId("reservation")}`,
+        reason: "retry"
+      });
     });
   }
 

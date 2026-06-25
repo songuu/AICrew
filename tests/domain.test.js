@@ -27,6 +27,7 @@ import {
   runCreativeWorkflow,
   saveSkillFromProject,
   setTaskLocked,
+  settleTaskCreditsInState,
   skills,
   skillGroups,
   skillsInGroup
@@ -736,6 +737,58 @@ test("normalizes legacy snapshots before UI render", () => {
   assert.ok(Array.isArray(state.assets));
   assert.ok(state.tasks.length > 0);
   assert.ok(state.assets.length > 0);
+});
+
+test("settleTaskCreditsInState records reserve-settle while display balance uses actual spend", () => {
+  const state = normalizeStateShape({
+    workspace: { credits: 120, monthlyCredits: 5000 },
+    creditLedger: []
+  });
+  const task = {
+    id: "task-credit-1",
+    status: "completed",
+    credits: { estimated: 50, actual: 35 }
+  };
+
+  const next = settleTaskCreditsInState(state, task, {
+    label: "Task settled",
+    reservationId: "reservation-credit-1"
+  });
+
+  assert.equal(next.workspace.credits, 85);
+  assert.equal(next.workspace.reservedCredits, 0);
+  assert.equal(next.creditReservations[0].status, "settled");
+  assert.equal(next.creditReservations[0].amountReserved, 50);
+  assert.equal(next.creditReservations[0].amountSettled, 35);
+  assert.deepEqual(next.creditReservationLedger.map(entry => entry.type), ["reserve", "settle"]);
+  assert.equal(next.creditReservationLedger.at(-1).balanceAfter, 85);
+  assert.equal(next.creditLedger[0].type, "consume");
+  assert.equal(next.creditLedger[0].amount, -35);
+  assert.equal(state.workspace.credits, 120);
+});
+
+test("settleTaskCreditsInState releases a failed task reservation without consuming credits", () => {
+  const state = normalizeStateShape({
+    workspace: { credits: 120, monthlyCredits: 5000 },
+    creditLedger: []
+  });
+  const task = {
+    id: "task-credit-2",
+    status: "failed",
+    credits: { estimated: 50, actual: 35 }
+  };
+
+  const next = settleTaskCreditsInState(state, task, {
+    label: "Task released",
+    reservationId: "reservation-credit-2"
+  });
+
+  assert.equal(next.workspace.credits, 120);
+  assert.equal(next.workspace.reservedCredits, 0);
+  assert.equal(next.creditReservations[0].status, "released");
+  assert.deepEqual(next.creditReservationLedger.map(entry => entry.type), ["reserve", "release"]);
+  assert.equal(next.creditLedger[0].type, "release");
+  assert.equal(next.creditLedger[0].amount, 0);
 });
 
 test("removes an asset from state without touching the original", () => {
