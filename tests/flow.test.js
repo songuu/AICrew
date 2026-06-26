@@ -198,6 +198,10 @@ test("routeIdeaToFlow detects rednote image intent", () => {
   assert.equal(isVideoFlow(result.flow), false);
   assert.ok(result.rationale.length >= 1);
   assert.ok(result.rationale.every(item => item.reason && item.title));
+  assert.equal(result.selectedSkill.id, result.matchedSkill.id);
+  assert.ok(["high", "medium", "low"].includes(result.confidence.level));
+  assert.ok(result.assumptions.some(item => item.includes("小红书")));
+  assert.ok(result.rationaleByAgent.copy || result.rationaleByAgent.visual);
 });
 
 test("routeIdeaToFlow picks a video pipeline for 抖音 ad", () => {
@@ -209,6 +213,20 @@ test("routeIdeaToFlow picks a video pipeline for 抖音 ad", () => {
 test("routeIdeaToFlow always returns a runnable flow even for vague input", () => {
   const result = routeIdeaToFlow("随便做点东西");
   assert.equal(validateFlow(result.flow).valid, true);
+  assert.ok(result.missingInputs.includes("productName"));
+  assert.ok(result.missingInputs.includes("targetAudience"));
+  assert.ok(result.missingInputs.includes("goal"));
+  assert.ok(result.riskFlags.includes("missing-inputs"));
+  assert.equal(result.alternatives.length, 3);
+});
+
+test("routeIdeaToFlow gives concrete rationale for expanded agents", () => {
+  const result = routeIdeaToFlow("全链路爆款内容引擎 小红书");
+  assert.equal(result.matchedSkill.id, "viral_content_engine_v1");
+  for (const agentId of ["trend", "hook", "persona", "seo"]) {
+    assert.ok(result.rationaleByAgent[agentId], `${agentId} should have rationale`);
+    assert.notEqual(result.rationaleByAgent[agentId], "执行该编排步骤");
+  }
 });
 
 // —— 执行：与 domain 契约同构 ——
@@ -308,6 +326,10 @@ test("matchAgentInText resolves short aliases, not just full titles", () => {
   assert.equal(matchAgentInText("删质检").id, "qa");
   assert.equal(matchAgentInText("来个文案").id, "copy");
   assert.equal(matchAgentInText("加策略").id, "strategy");
+  assert.equal(matchAgentInText("加趋势").id, "trend");
+  assert.equal(matchAgentInText("加钩子").id, "hook");
+  assert.equal(matchAgentInText("加人设").id, "persona");
+  assert.equal(matchAgentInText("加SEO").id, "seo");
 });
 
 test("parseDirectorCommand adds an agent immutably", () => {

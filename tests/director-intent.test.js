@@ -63,6 +63,16 @@ test("resolveDirectorCommand falls back to regex when the LLM call fails", async
   assert.ok(hasAgent(result.flow, "visual"));
 });
 
+test("resolveDirectorCommand fallback supports expanded agent aliases", async () => {
+  let flow = createFlow("manual");
+  for (const [text, agentId] of [["加趋势", "trend"], ["加钩子", "hook"], ["加人设", "persona"], ["加SEO", "seo"]]) {
+    const result = await resolveDirectorCommand({ text, flow, aiConfig: null });
+    assert.equal(result.source, "regex");
+    assert.ok(hasAgent(result.flow, agentId), `${text} should add ${agentId}`);
+    flow = result.flow;
+  }
+});
+
 test("resolveDirectorCommand falls back to regex with no aiConfig and still locks video", async () => {
   const result = await resolveDirectorCommand({ text: "加视频", flow: createFlow("manual"), aiConfig: null });
   assert.equal(result.source, "regex");
