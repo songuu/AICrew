@@ -38,6 +38,7 @@ import {
 } from "../lib/ai/config.js";
 import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
 import { runFlow, runFlowWithAI } from "../lib/flow/execute.js";
+import { REDNOTE_PUBLISH_DEEPLINK, REDNOTE_PUBLISH_STEPS, supportsRednoteHandoff, buildRednoteShareText } from "../lib/share/rednote.js";
 import { flowToSkill } from "../lib/flow/model.js";
 import { stashVariantImages, rehydrateVariantImages, stashLibraryAssets, rehydrateLibraryAssets, IMAGE_STORE_KEY, STASH_UNBOUNDED } from "../lib/storage/imageStore.js";
 import { validateLibraryAsset, normalizeLibraryAsset, normalizeMaterial } from "../lib/storage/materialStore.js";
@@ -158,6 +159,90 @@ async function downloadImageFile(file) {
     triggerBrowserDownload(file.name, url, true);
   } catch {
     triggerBrowserDownload(file.name, file.url);
+  }
+}
+
+// —— 小红书一键带稿交接（Tier 0）的浏览器副作用层 ——
+// 纯逻辑在 lib/share/rednote.js；这里只做 clipboard / Web Share / 文件抓取，全部带兜底。
+
+// 复制结构化文案到剪贴板，返回是否成功（不抛错，UI 据此给反馈）。
+async function copyShareText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 把导出图片（dataUrl / https url）转成 Web Share 需要的 File；失败返回 null（被调用方过滤）。
+async function fileFromExportImage(file) {
+  try {
+    const source = file.dataUrl || file.url;
+    if (!source) return null;
+    const blob = await (await fetch(source)).blob();
+    return new File([blob], file.name || "image.png", { type: blob.type || "image/png" });
+  } catch {
+    return null;
+  }
+}
+
+// 一键分享到小红书：优先 Web Share 带图+文案 → 退化为仅文案分享 → 再退化为复制文案。
+// 返回一句给用户的状态文案；用户取消分享不算失败。
+async function shareToRednote(text, imageFiles = []) {
+  const canShare = typeof navigator !== "undefined" && typeof navigator.share === "function";
+  let files = [];
+  try {
+    files = (await Promise.all(imageFiles.map(fileFromExportImage))).filter(Boolean);
+  } catch {
+    files = [];
+  }
+  try {
+    if (canShare && files.length && navigator.canShare?.({ files })) {
+      await navigator.share({ files, text, title: "小红书笔记" });
+      return "已唤起系统分享，选择小红书完成发布";
+    }
+    if (canShare) {
+      await navigator.share({ text, title: "小红书笔记" });
+      return "已唤起系统分享（文案）；图片请用下方下载按钮保存后选图";
+    }
+  } catch (error) {
+    if (error && error.name === "AbortError") return "已取消分享";
+    // 其余错误（权限/不支持）落到复制兜底
+  }
+  const copied = await copyShareText(text);
+  return copied
+    ? "本设备不支持系统分享，已复制文案；下载图片后到小红书发布器粘贴"
+    : "请手动复制文案并下载图片后到小红书发布";
+}
+
+// 一键带稿去发布（无凭证替代方案）：自动选最优合规路径——
+// 移动端优先 Web Share 带图（文案随附）；否则复制文案 + 唤起官方发布器，落地后长按粘贴。
+// 终点仍是用户在小红书发布器手动确认，不做任何自动发布。
+async function oneClickRednotePublish(text, imageFiles = []) {
+  let files = [];
+  try {
+    files = (await Promise.all((imageFiles || []).map(fileFromExportImage))).filter(Boolean);
+  } catch {
+    files = [];
+  }
+  // 路径一：Web Share 带图（text 已随附，无需先复制）
+  if (typeof navigator !== "undefined" && typeof navigator.share === "function" && files.length && navigator.canShare?.({ files })) {
+    try {
+      await navigator.share({ files, text, title: "小红书笔记" });
+      return "已带图唤起分享，选择小红书后粘贴文案即可发布";
+    } catch (error) {
+      if (error && error.name === "AbortError") return "已取消";
+      // 分享失败则落到深链路径
+    }
+  }
+  // 路径二：复制文案 + 唤起官方发布器（落地后长按粘贴）
+  const copied = await copyShareText(text);
+  try {
+    window.location.href = REDNOTE_PUBLISH_DEEPLINK;
+    return copied ? "文案已复制并唤起发布器，落地后长按粘贴发布" : "已唤起发布器，请手动粘贴文案";
+  } catch {
+    return copied ? "文案已复制，请打开小红书新建笔记后粘贴发布" : "请手动复制文案到小红书发布";
   }
 }
 
@@ -1731,6 +1816,59 @@ function Brand({ state, saveBrand }) {
   );
 }
 
+// 小红书一键带稿交接行：复制文案 / 系统分享带图 / 唤起官方发布器。
+// 对标小鸡AI App 的发布交接，但终点是用户在小红书发布器手动确认，不做任何自动发布。
+function RednoteHandoff({ variant, imageFiles }) {
+  const [status, setStatus] = useState("");
+  const share = buildRednoteShareText(variant || {});
+  if (!share.text) return null;
+
+  async function handleOneClick() {
+    setStatus("正在带稿去发布…");
+    setStatus(await oneClickRednotePublish(share.text, imageFiles || []));
+  }
+  async function handleCopy() {
+    const ok = await copyShareText(share.text);
+    setStatus(ok ? "已复制文案，去小红书发布器粘贴" : "复制失败，请手动选择文案");
+  }
+  async function handleShare() {
+    setStatus("正在准备分享…");
+    setStatus(await shareToRednote(share.text, imageFiles || []));
+  }
+  function handleOpenPublisher() {
+    try {
+      window.location.href = REDNOTE_PUBLISH_DEEPLINK;
+      setStatus("已尝试唤起小红书发布器（需移动端已安装小红书）");
+    } catch {
+      setStatus("唤起失败，请在手机小红书内手动新建笔记");
+    }
+  }
+
+  return (
+    <div className="export-handoff">
+      <span className="export-handoff-label">带到小红书</span>
+      <button type="button" className="primary-button export-handoff-primary" onClick={handleOneClick}>
+        🚀 一键带稿去发布
+      </button>
+      <div className="export-handoff-actions">
+        <button type="button" className="ghost-btn" onClick={handleCopy}>📋 复制文案</button>
+        <button type="button" className="ghost-btn" onClick={handleShare}>📤 分享/带图</button>
+        <button type="button" className="ghost-btn" onClick={handleOpenPublisher}>📲 打开发布器</button>
+      </div>
+      <ol className="export-handoff-steps">
+        {REDNOTE_PUBLISH_STEPS.map(step => (
+          <li key={step}>{step}</li>
+        ))}
+      </ol>
+      {status && (
+        <small className="export-handoff-status" role="status">
+          {status}
+        </small>
+      )}
+    </div>
+  );
+}
+
 function Exports({ state }) {
   return (
     <div className="page-grid">
@@ -1744,7 +1882,8 @@ function Exports({ state }) {
         <div className="export-grid">
           {state.exports.map(item => {
             const fileNames = exportFileNames(item);
-            const bundle = assembleExportBundle(item, findVariantById(state, item.variantId));
+            const variant = findVariantById(state, item.variantId);
+            const bundle = assembleExportBundle(item, variant);
             return (
               <article className="export-card" key={item.id}>
                 <div className="export-icon">{fileNames.some(name => name.endsWith(".mp4")) ? "MP4" : "IMG"}</div>
@@ -1774,6 +1913,7 @@ function Exports({ state }) {
                     </button>
                   ))}
                 </div>
+                {supportsRednoteHandoff(item.platform) && <RednoteHandoff variant={variant} imageFiles={bundle.imageFiles} />}
                 <small>{formatDate(item.createdAt)}</small>
               </article>
             );
