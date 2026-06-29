@@ -1,0 +1,23 @@
+import { json, DB_UNCONFIGURED_MESSAGE, INTERNAL_ERROR_MESSAGE } from "../../../../lib/db/http.js";
+import { isDbConfigured, resolveWorkspaceId, withDbRetry } from "../../../../lib/db/client.js";
+import { applyCreditTransaction, CreditTransactionError } from "../../../../lib/db/repositories/credits.js";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+export async function POST(request: Request) {
+  if (!isDbConfigured()) return json({ error: DB_UNCONFIGURED_MESSAGE }, 503);
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "请求 JSON 无效" }, 400);
+  }
+  try {
+    const result = await withDbRetry(() => applyCreditTransaction(body, resolveWorkspaceId(request)));
+    return json(result);
+  } catch (error) {
+    if (error instanceof CreditTransactionError) return json({ error: error.message, code: error.code }, error.status);
+    return json({ error: INTERNAL_ERROR_MESSAGE }, 500);
+  }
+}
