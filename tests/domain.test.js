@@ -20,11 +20,14 @@ import {
   platformPresets,
   recommendRednoteSkills,
   recommendDouyinSkills,
+  recommendChannelsSkills,
   removeAssetFromState,
   rednotePromotionSkills,
   rednotePromotionStages,
   douyinPromotionSkills,
   douyinPromotionStages,
+  channelsPromotionSkills,
+  channelsPromotionStages,
   reviseVariantHook,
   retryAgentStep,
   runCreativeWorkflow,
@@ -264,7 +267,7 @@ test("skillGroups exposes 推荐 first, then the 带货 categories", () => {
   assert.equal(skillGroups[0].id, "featured");
   assert.equal(skillGroups[0].name, "推荐");
   const ids = skillGroups.map(group => group.id);
-  assert.deepEqual(ids, ["featured", "rednote", "douyin", "ecom", "beauty", "shortvideo"]);
+  assert.deepEqual(ids, ["featured", "rednote", "douyin", "channels", "ecom", "beauty", "shortvideo"]);
 });
 
 test("every skill carries picker metadata (icon/group/promise/bestFor)", () => {
@@ -454,6 +457,105 @@ test("recommendDouyinSkills routes acquisition intents to the right douyin skill
   assert.equal(recommendDouyinSkills({ query: "线索留资 引流诱饵 原生表单 私信关键词", limit: 1 })[0].id, "douyin_lead_capture_funnel_v1");
   assert.equal(recommendDouyinSkills({ query: "企业号装修 私信菜单 粉丝群SOP 企微导流", limit: 1 })[0].id, "douyin_private_domain_handoff_v1");
   assert.equal(recommendDouyinSkills({ query: "投后复盘 爆点归因 赛马诊断", limit: 1 })[0].id, "douyin_campaign_review_v1");
+});
+
+// ---- 视频号获客体系（镜像 rednote/douyin：9 阶段漏斗 + 路由 + 视频/图文双链路 + 微信生态闭环）----
+const channelsSystemSkillIds = [
+  "channels_account_positioning_v1",
+  "channels_search_seo_v1",
+  "channels_lead_gen_shortvideo_v1",
+  "channels_viral_rewrite_v1",
+  "channels_matrix_warmup_v1",
+  "channels_social_fission_pack_v1",
+  "channels_live_acquisition_script_v1",
+  "channels_shop_product_material_v1",
+  "channels_official_account_linkage_v1",
+  "channels_lead_magnet_funnel_v1",
+  "channels_compliance_guard_v1",
+  "channels_private_domain_handoff_v1"
+];
+
+test("channels acquisition system covers the full promotion funnel", () => {
+  assert.deepEqual(
+    channelsPromotionStages.map(stage => stage.id),
+    ["positioning", "search_seo", "content_engine", "social_fission", "live_acquisition", "wechat_commerce", "ecosystem_linkage", "lead_capture", "private_domain"]
+  );
+  const channelsSkills = channelsPromotionSkills();
+  const ids = channelsSkills.map(skill => skill.id);
+  for (const id of channelsSystemSkillIds) {
+    assert.ok(ids.includes(id), `${id} missing from channels promotion system`);
+  }
+  const coveredStages = new Set(channelsSkills.map(skill => skill.channelsStage).filter(Boolean));
+  assert.deepEqual([...coveredStages].sort(), channelsPromotionStages.map(stage => stage.id).sort());
+});
+
+test("channels promotion skills are production-ready, not generic templates", () => {
+  for (const skill of channelsPromotionSkills()) {
+    assert.equal(skill.platform, "视频号", `${skill.id} should be scoped to 视频号`);
+    assert.ok(skill.channelsStage, `${skill.id} missing channelsStage`);
+    assert.ok((skill.recommendTags || []).length >= 4, `${skill.id} should expose recommendation tags`);
+    assert.ok(skill.formats.length >= 4, `${skill.id} should describe concrete deliverables`);
+    assert.ok(skill.agents.includes("qa"), `${skill.id} should include QA`);
+    assert.ok(skill.agents.includes("export"), `${skill.id} should include export`);
+    assert.doesNotMatch(`${skill.name} ${skill.promise} ${skill.bestFor}`, /占位|待定|假数据|通用模板/);
+  }
+});
+
+test("skillsInGroup(channels) returns the complete 视频号 promotion system", () => {
+  const byGroup = skillsInGroup("channels").map(skill => skill.id);
+  const bySystem = channelsPromotionSkills().map(skill => skill.id);
+  assert.deepEqual(byGroup, bySystem);
+  assert.ok(byGroup.length >= 12);
+});
+
+test("recommendChannelsSkills routes acquisition intents to the right channels skill", () => {
+  assert.equal(recommendChannelsSkills({ query: "账号定位 人设差异化 卖点诊断 主页优化", limit: 1 })[0].id, "channels_account_positioning_v1");
+  assert.equal(recommendChannelsSkills({ query: "搜一搜 视频号SEO 关键词布局 话题标签", limit: 1 })[0].id, "channels_search_seo_v1");
+  assert.equal(recommendChannelsSkills({ query: "引流短视频 完播结构 钩子开场 加企微引导", limit: 1 })[0].id, "channels_lead_gen_shortvideo_v1");
+  assert.equal(recommendChannelsSkills({ query: "爆款改写 对标拆解 同结构原创 二创", limit: 1 })[0].id, "channels_viral_rewrite_v1");
+  assert.equal(recommendChannelsSkills({ query: "矩阵号 起号养号 多账号人设 选题分发", limit: 1 })[0].id, "channels_matrix_warmup_v1");
+  assert.equal(recommendChannelsSkills({ query: "社交裂变 朋友圈转发 点赞助力 裂变海报", limit: 1 })[0].id, "channels_social_fission_pack_v1");
+  assert.equal(recommendChannelsSkills({ query: "直播脚本 直播预约 憋单逼单 场控SOP", limit: 1 })[0].id, "channels_live_acquisition_script_v1");
+  assert.equal(recommendChannelsSkills({ query: "视频号小店 带货素材 商品卡 过款话术", limit: 1 })[0].id, "channels_shop_product_material_v1");
+  assert.equal(recommendChannelsSkills({ query: "公众号联动 互导文案 视频号挂载 涨粉钩子", limit: 1 })[0].id, "channels_official_account_linkage_v1");
+  assert.equal(recommendChannelsSkills({ query: "引流诱饵 线索留资 资料包 承接路径", limit: 1 })[0].id, "channels_lead_magnet_funnel_v1");
+  assert.equal(recommendChannelsSkills({ query: "合规改写 红线校验 诱导分享 违规词替换", limit: 1 })[0].id, "channels_compliance_guard_v1");
+  assert.equal(recommendChannelsSkills({ query: "企微承接 社群运营 欢迎语 复购召回", limit: 1 })[0].id, "channels_private_domain_handoff_v1");
+});
+
+test("channels system skills run through workflow contracts (video & text first)", () => {
+  for (const id of channelsSystemSkillIds) {
+    const skill = findSkill(id);
+    const task = runCreativeWorkflow({
+      brief: normalizeBrief({ productName: "便携补光灯", platform: "视频号", targetAudience: "私域运营团队" }),
+      skillId: id,
+      brandKit: defaultBrandKit
+    });
+    assert.equal(task.skillId, id);
+    assert.equal(task.status, "completed");
+    assert.equal(task.agents.length, skill.agents.length);
+    assert.equal(task.exports.length, 3);
+    if (skill.agents.includes("video")) {
+      assert.ok(task.exports[0].fileNames.includes("video.mp4"), `${id} should export video`);
+      assert.ok(task.credits.video > 0, `${id} should bill video credits`);
+    } else {
+      assert.ok(!task.exports[0].fileNames.includes("video.mp4"), `${id} should stay image/text first`);
+      assert.equal(task.credits.video, 0);
+    }
+  }
+});
+
+test("视频号 platform preset drives ratio + qa via findPlatformPreset (no platform=== branch)", () => {
+  const preset = findPlatformPreset("视频号");
+  assert.equal(preset.id, "channels");
+  assert.equal(preset.lang, "zh");
+  const task = runCreativeWorkflow({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "视频号" }),
+    skillId: "channels_lead_gen_shortvideo_v1",
+    brandKit: defaultBrandKit
+  });
+  assert.equal(task.variants[0].aspectRatio, preset.ratio);
+  assert.ok(task.qa.overallScore >= 80);
 });
 
 test("douyin system skills run through workflow contracts (video & text first)", () => {
@@ -766,6 +868,8 @@ test("detectPlatform routes new platform tokens from freeform brief", () => {
   assert.equal(parseBriefText("给露营灯做一组 Instagram Reels 视频").platform, "Instagram Reels");
   assert.equal(parseBriefText("产品 X，发 YouTube Shorts").platform, "YouTube Shorts");
   assert.equal(parseBriefText("独立站 Shopify PDP 详情页主图").platform, "Shopify PDP");
+  assert.equal(parseBriefText("做一条视频号引流短视频").platform, "视频号");
+  assert.equal(parseBriefText("发到 WeChat Channels 的口播").platform, "视频号");
   // 回退不变：无专属 token → 抖音
   assert.equal(parseBriefText("随便做点带货内容").platform, "抖音");
   // 过短缩写不误命中：design 含 "ig" 不应路由到 Reels
