@@ -671,6 +671,32 @@ test("Hook Lab (hook node) adds a multi-candidate hook instruction; non-hook ski
   assert.ok(plainPrompts.every(prompt => !prompt.includes("候选钩子")), "non-hook skill must not get the Hook Lab instruction");
 });
 
+test("a skill can override platform hook frameworks via skill.hookPatterns (acquisition skills)", async () => {
+  // 获客技能（评论区截流）声明 skill.hookPatterns=[截流神评钩…]，应覆盖平台默认框架注入 copy prompt；
+  // 而无声明的种草技能不应出现该获客框架——证明覆盖是 skill 级、不污染其他技能（向后兼容）。
+  const interceptPrompts = [];
+  const { fetchImpl: interceptFetch } = makeFetch(promptCaptureRouter(interceptPrompts, []));
+  await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_comment_intercept_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl: interceptFetch
+  });
+  const seedingPrompts = [];
+  const { fetchImpl: seedingFetch } = makeFetch(promptCaptureRouter(seedingPrompts, []));
+  await runCreativeWorkflowWithAI({
+    brief: normalizeBrief({ productName: "玻尿酸面膜", platform: "小红书" }),
+    skillId: "rednote_seeding_note_v1",
+    brandKit: defaultBrandKit,
+    aiConfig: systemConfig(),
+    fetchImpl: seedingFetch
+  });
+  assert.ok(interceptPrompts.length > 0 && seedingPrompts.length > 0);
+  assert.ok(interceptPrompts.every(p => p.includes("截流神评钩")), "acquisition skill should inject its own hook framework via skill.hookPatterns");
+  assert.ok(seedingPrompts.every(p => !p.includes("截流神评钩")), "skills without skill.hookPatterns must not get the acquisition framework");
+});
+
 // ---- agent expansion: trend / persona / seo prompt injection (gated on node presence) ----
 test("trend/persona/seo nodes inject their guidance into copy prompt; absent when not orchestrated", async () => {
   const fullPrompts = [];

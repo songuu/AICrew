@@ -241,7 +241,20 @@ const rednoteSystemSkillIds = [
   "rednote_juguang_launch_v1",
   "rednote_search_keyword_boost_v1",
   "rednote_comment_dm_conversion_v1",
-  "rednote_performance_review_v1"
+  "rednote_performance_review_v1",
+  // 获客生态扩展（参照小鸡AI 产品矩阵）：线索捕捉 / 私域承接 / 内容 / 诊断 / 投放缺口补全
+  "rednote_comment_intercept_v1",
+  "rednote_lead_magnet_hook_v1",
+  "rednote_dm_funnel_sop_v1",
+  "rednote_pro_account_setup_v1",
+  "rednote_group_chat_ops_v1",
+  "rednote_viral_rewrite_v1",
+  "rednote_account_matrix_warmup_v1",
+  "rednote_compliance_check_v1",
+  "rednote_data_topic_mining_v1",
+  "rednote_audience_persona_profile_v1",
+  "rednote_selling_point_diagnosis_v1",
+  "rednote_anti_funnel_targeting_v1"
 ];
 // ---- RoboNeo 式技能选择器：数据模型 ----
 test("skillGroups exposes 推荐 first, then the 带货 categories", () => {
@@ -315,7 +328,7 @@ test("new real-demand skills run and keep video/image delivery contracts", () =>
 test("rednote promotion skill system covers the full recommendation funnel", () => {
   assert.deepEqual(
     rednotePromotionStages.map(stage => stage.id),
-    ["diagnosis", "search_strategy", "content_production", "creator_seeding", "paid_amplification", "conversion", "measurement"]
+    ["diagnosis", "search_strategy", "content_production", "creator_seeding", "paid_amplification", "lead_capture", "conversion", "private_domain", "measurement"]
   );
 
   const rednoteSkills = rednotePromotionSkills();
@@ -354,6 +367,22 @@ test("recommendRednoteSkills routes real promotion intents to the right skill", 
   assert.equal(recommendRednoteSkills({ query: "达人 KOC 合作 brief", limit: 1 })[0].id, "rednote_koc_brief_v1");
   assert.equal(recommendRednoteSkills({ query: "评论 私信 转化", limit: 1 })[0].id, "rednote_comment_dm_conversion_v1");
   assert.equal(recommendRednoteSkills({ stage: "复盘优化", query: "投后 数据", limit: 1 })[0].id, "rednote_performance_review_v1");
+});
+
+test("recommendRednoteSkills routes acquisition (获客) intents to the new skills", () => {
+  // 新获客技能的意图归属，固化路由防回归；同时反证未抢走上一组 4 条焊死路由。
+  assert.equal(recommendRednoteSkills({ query: "评论区 截流 竞品", limit: 1 })[0].id, "rednote_comment_intercept_v1");
+  assert.equal(recommendRednoteSkills({ query: "引流钩子 诱饵 资料包 领取引导", limit: 1 })[0].id, "rednote_lead_magnet_hook_v1");
+  assert.equal(recommendRednoteSkills({ query: "私信开场 获客SOP 加微 留资", limit: 1 })[0].id, "rednote_dm_funnel_sop_v1");
+  assert.equal(recommendRednoteSkills({ query: "爆文 仿写 改写 结构套用", limit: 1 })[0].id, "rednote_viral_rewrite_v1");
+  assert.equal(recommendRednoteSkills({ query: "起号 养号 账号矩阵 多账号", limit: 1 })[0].id, "rednote_account_matrix_warmup_v1");
+  assert.equal(recommendRednoteSkills({ query: "企业号 主页搭建 私信菜单 欢迎语", limit: 1 })[0].id, "rednote_pro_account_setup_v1");
+  assert.equal(recommendRednoteSkills({ query: "群聊 社群 建群 私域沉淀", limit: 1 })[0].id, "rednote_group_chat_ops_v1");
+  assert.equal(recommendRednoteSkills({ query: "数据选题 爆文选题库 选题打分", limit: 1 })[0].id, "rednote_data_topic_mining_v1");
+  assert.equal(recommendRednoteSkills({ query: "违禁词 合规 质检 限流自查", limit: 1 })[0].id, "rednote_compliance_check_v1");
+  assert.equal(recommendRednoteSkills({ query: "目标人群 画像 人设定位", limit: 1 })[0].id, "rednote_audience_persona_profile_v1");
+  assert.equal(recommendRednoteSkills({ query: "卖点 产品力 差异化 记忆点", limit: 1 })[0].id, "rednote_selling_point_diagnosis_v1");
+  assert.equal(recommendRednoteSkills({ query: "人群反漏斗 人群包 渗透 破圈", limit: 1 })[0].id, "rednote_anti_funnel_targeting_v1");
 });
 
 test("new rednote system skills run through workflow contracts", () => {
