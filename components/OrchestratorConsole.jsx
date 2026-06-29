@@ -9,7 +9,7 @@
 // 三者最终都把一个合法 Flow 交给 onRun(brief, flow, meta) 执行，产出契约完全一致。
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { agents, skills, skillGroups, skillsInGroup, isPromotionGroup, promotionFunnelForGroup, recommendForGroup, parseBriefText, findPlatformPreset, platformPresets, mergeCreativeParams, estimateCreditsForSkill } from "../lib/domain.js";
+import { agents, skills, skillGroups, skillsInGroup, isPromotionGroup, promotionFunnelForGroup, recommendForGroup, parseBriefText, findPlatformPreset, platformPresets, mergeCreativeParams, estimateCreditsForSkill, creditEstimateTotal } from "../lib/domain.js";
 import {
   createFlow,
   toggleAgent,
@@ -339,7 +339,7 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
     skillId: params.skillId || undefined,
     name: skillNameFor(params.skillId) || "自定义编排"
   })), [flow, quoteBrief, params.skillId]);
-  const estimatedCredits = Number.isFinite(credits?.estimated) ? credits.estimated : 0;
+  const estimatedCredits = creditEstimateTotal(credits);
   const validity = useMemo(() => validateFlow(flow), [flow]);
   const orderedIds = orderedAgentIds(flow);
 

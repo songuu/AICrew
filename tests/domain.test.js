@@ -9,6 +9,7 @@ import {
   createProjectFromTask,
   defaultBrandKit,
   estimateCredits,
+  creditEstimateTotal,
   findSkill,
   findPlatformPreset,
   scoreHookStrength,
@@ -104,6 +105,14 @@ test("estimates credits by skill and brief complexity", () => {
   assert.ok(credits.estimated >= 120);
   assert.ok(credits.video > credits.llm);
   assert.ok(credits.export >= 6);
+});
+
+test("creditEstimateTotal extracts the renderable total from a quote object", () => {
+  const quote = estimateCredits(parseBriefText("产品: 洁面仪, 目标: 提升转化"), "product_ad_v1");
+
+  assert.equal(creditEstimateTotal(quote), quote.estimated);
+  assert.equal(creditEstimateTotal(42), 42);
+  assert.equal(creditEstimateTotal({ estimated: "120" }), 0);
 });
 
 test("runs full creative workflow with three content variants and exports", () => {
