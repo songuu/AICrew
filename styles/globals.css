@@ -2019,6 +2019,65 @@ button {
   cursor: not-allowed;
 }
 
+/* 小红书一键带稿交接行：与下载区分隔，用品牌色调点缀 */
+.export-handoff {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(255, 122, 144, 0.32);
+}
+
+.export-handoff-label {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 122, 144, 0.9);
+}
+
+.export-handoff-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.export-handoff-actions .ghost-btn {
+  font-size: 12px;
+  padding: 4px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 122, 144, 0.28);
+  background: rgba(255, 122, 144, 0.06);
+  color: inherit;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.export-handoff-actions .ghost-btn:hover:not(:disabled) {
+  background: rgba(255, 122, 144, 0.14);
+  border-color: rgba(255, 122, 144, 0.5);
+}
+
+.export-handoff-primary {
+  justify-self: start;
+  font-size: 12px;
+  padding: 6px 12px;
+}
+
+.export-handoff-steps {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.export-handoff-status {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 /* ---------- meters ---------- */
 .credit-meter,
 .health-bar {
