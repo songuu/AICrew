@@ -9,6 +9,7 @@ import {
   createProjectFromTask,
   defaultBrandKit,
   estimateCredits,
+  creditEstimateTotal,
   findSkill,
   findPlatformPreset,
   scoreHookStrength,
@@ -28,6 +29,9 @@ import {
   douyinPromotionStages,
   channelsPromotionSkills,
   channelsPromotionStages,
+  isPromotionGroup,
+  promotionFunnelForGroup,
+  recommendForGroup,
   reviseVariantHook,
   retryAgentStep,
   runCreativeWorkflow,
@@ -101,6 +105,14 @@ test("estimates credits by skill and brief complexity", () => {
   assert.ok(credits.estimated >= 120);
   assert.ok(credits.video > credits.llm);
   assert.ok(credits.export >= 6);
+});
+
+test("creditEstimateTotal extracts the renderable total from a quote object", () => {
+  const quote = estimateCredits(parseBriefText("产品: 洁面仪, 目标: 提升转化"), "product_ad_v1");
+
+  assert.equal(creditEstimateTotal(quote), quote.estimated);
+  assert.equal(creditEstimateTotal(42), 42);
+  assert.equal(creditEstimateTotal({ estimated: "120" }), 0);
 });
 
 test("runs full creative workflow with three content variants and exports", () => {
@@ -543,6 +555,34 @@ test("channels system skills run through workflow contracts (video & text first)
       assert.equal(task.credits.video, 0);
     }
   }
+});
+
+test("promotion registry accessors unify the three acquisition funnels", () => {
+  for (const id of ["rednote", "douyin", "channels"]) assert.ok(isPromotionGroup(id), `${id} should be a promotion group`);
+  for (const id of ["featured", "ecom", "beauty", "shortvideo"]) assert.ok(!isPromotionGroup(id), `${id} is not a promotion group`);
+
+  for (const [groupId, stages, stageKey] of [
+    ["rednote", rednotePromotionStages, "rednoteStage"],
+    ["douyin", douyinPromotionStages, "douyinStage"],
+    ["channels", channelsPromotionStages, "channelsStage"]
+  ]) {
+    const funnel = promotionFunnelForGroup(groupId);
+    assert.deepEqual(funnel.map(section => section.stage.id), stages.map(stage => stage.id), `${groupId} funnel order should follow stages`);
+    const total = funnel.reduce((sum, section) => sum + section.skills.length, 0);
+    assert.equal(total, skillsInGroup(groupId).length, `${groupId} funnel should bucket every skill exactly once`);
+    for (const section of funnel) {
+      assert.ok(section.skills.length >= 1, `${groupId} stage ${section.stage.id} must have at least one skill`);
+      assert.ok(section.skills.every(skill => skill[stageKey] === section.stage.id), `${groupId} ${section.stage.id} skills must match stage`);
+    }
+  }
+  assert.equal(promotionFunnelForGroup("ecom"), null);
+});
+
+test("recommendForGroup delegates intent routing to the right platform system", () => {
+  assert.equal(recommendForGroup("rednote", { query: "评论区 截流 竞品", limit: 1 })[0].id, "rednote_comment_intercept_v1");
+  assert.equal(recommendForGroup("douyin", { query: "直播脚本 憋单话术 逼单催单 场控SOP", limit: 1 })[0].id, "douyin_live_acquisition_script_v1");
+  assert.equal(recommendForGroup("channels", { query: "社交裂变 朋友圈转发 点赞助力 裂变海报", limit: 1 })[0].id, "channels_social_fission_pack_v1");
+  assert.deepEqual(recommendForGroup("ecom", { query: "x" }), []);
 });
 
 test("视频号 platform preset drives ratio + qa via findPlatformPreset (no platform=== branch)", () => {
