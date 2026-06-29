@@ -272,7 +272,11 @@ const rednoteSystemSkillIds = [
   "rednote_data_topic_mining_v1",
   "rednote_audience_persona_profile_v1",
   "rednote_selling_point_diagnosis_v1",
-  "rednote_anti_funnel_targeting_v1"
+  "rednote_anti_funnel_targeting_v1",
+  // 内容层缺口补全（对标小鸡AI 全生态：图片配文 / 氛围评论 / 定时批量发布）
+  "rednote_image_caption_v1",
+  "rednote_first_comment_v1",
+  "rednote_publish_optimizer_v1"
 ];
 // ---- RoboNeo 式技能选择器：数据模型 ----
 test("skillGroups exposes 推荐 first, then the 带货 categories", () => {
@@ -401,6 +405,10 @@ test("recommendRednoteSkills routes acquisition (获客) intents to the new skil
   assert.equal(recommendRednoteSkills({ query: "目标人群 画像 人设定位", limit: 1 })[0].id, "rednote_audience_persona_profile_v1");
   assert.equal(recommendRednoteSkills({ query: "卖点 产品力 差异化 记忆点", limit: 1 })[0].id, "rednote_selling_point_diagnosis_v1");
   assert.equal(recommendRednoteSkills({ query: "人群反漏斗 人群包 渗透 破圈", limit: 1 })[0].id, "rednote_anti_funnel_targeting_v1");
+  // 内容层缺口补全（对标小鸡AI 全生态）：图片配文 / 首评互动 / 发布优化
+  assert.equal(recommendRednoteSkills({ query: "图片配文 配图文案 看图写文 图配文", limit: 1 })[0].id, "rednote_image_caption_v1");
+  assert.equal(recommendRednoteSkills({ query: "首评 氛围评论 互动引导 置顶评论", limit: 1 })[0].id, "rednote_first_comment_v1");
+  assert.equal(recommendRednoteSkills({ query: "发布优化 发布前检查 发布清单 最佳发布时间", limit: 1 })[0].id, "rednote_publish_optimizer_v1");
 });
 
 // ---- 抖音获客体系（镜像小红书 rednote 体系：9 阶段漏斗 + 路由 + 视频/图文双链路）----
