@@ -55,6 +55,7 @@ Optional variables:
 | `AICREW_AI_IMAGE_STEPS` | SiliconFlow inference steps, default `20` |
 | `AICREW_AI_IMAGE_GUIDANCE_SCALE` | SiliconFlow guidance scale, default `7.5` |
 | `AICREW_AI_MODELS_JSON` | JSON catalog for multiple text/image/video system models |
+| `NEXT_PUBLIC_AICREW_CREDITS_ENABLED` | Set to `0`, `false`, or `off` to hide and bypass the credits/billing system; defaults to enabled |
 
 Example `.env` values:
 
@@ -68,6 +69,7 @@ AICREW_AI_IMAGE_MODEL=Kwai-Kolors/Kolors
 AICREW_AI_IMAGE_API=siliconflow
 AICREW_AI_IMAGE_SIZE=1024x1024
 AICREW_AI_VIDEO_MODEL=video-pro
+NEXT_PUBLIC_AICREW_CREDITS_ENABLED=0
 ```
 
 For SiliconFlow image generation, AICrew sends `image_size`, `batch_size`, `num_inference_steps`, and `guidance_scale`, and reads the returned `images[0].url`. SiliconFlow image URLs expire after one hour, so generated covers should be treated as runtime assets unless you add a later download/storage step.

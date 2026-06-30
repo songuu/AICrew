@@ -337,6 +337,10 @@ function aiRuntimeText(aiConfig) {
   return `${aiConfig.providerName} · ${describeSelectedModel(aiConfig, aiConfig.selection, "text")}`;
 }
 
+function creditsEnabledFor(aiConfig) {
+  return aiConfig?.features?.creditsEnabled !== false;
+}
+
 function assetToMaterial(asset) {
   return normalizeMaterial({
     name: asset?.name,
@@ -478,12 +482,17 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   const task = state?.tasks?.find(item => item.id === selectedTaskId) || state?.tasks?.[0];
   const project = state?.projects?.find(item => item.taskId === task?.id) || state?.projects?.[0];
   const allSkills = useMemo(() => [...skills, ...(state?.customSkills || [])], [state]);
+  const creditsEnabled = creditsEnabledFor(aiConfig);
   const referencedMaterials = useMemo(() => {
     if (!state) return [];
     const ids = new Set(referencedAssetIds);
     return state.assets.filter(asset => ids.has(asset.id)).map(assetToMaterial);
   }, [state, referencedAssetIds]);
   const activeVariant = task?.variants.find(item => item.id === selectedVariantId) || task?.variants?.[0];
+
+  useEffect(() => {
+    if (!creditsEnabled && view === "billing") navigate("dashboard");
+  }, [creditsEnabled, view]);
 
   useEffect(() => {
     if (!task) return;
@@ -494,8 +503,9 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   }, [task?.id, selectedTaskId, selectedVariantId]);
 
   function navigate(nextView) {
-    setView(nextView);
-    window.history.pushState(null, "", hrefFor(nextView));
+    const targetView = !creditsEnabled && nextView === "billing" ? "dashboard" : nextView;
+    setView(targetView);
+    window.history.pushState(null, "", hrefFor(targetView));
   }
 
   // 就地选中：仅切换当前历史任务，不离开历史页 —— 右侧 detail 面板随即显示该任务的「之前效果」。
@@ -559,7 +569,16 @@ export function AICrewStudio({ initialView = "dashboard" }) {
     });
   }
 
+  function addRunFailureNoticeToState(current, label, error) {
+    const detail = error instanceof Error ? error.message : String(error || "unknown error");
+    return addNotificationToState(current, {
+      level: "warning",
+      title: label + " 执行失败：" + detail
+    });
+  }
+
   function ensureCreditsBeforeRun(amount, label) {
+    if (!creditsEnabled) return true;
     const required = Number.isFinite(amount) ? Math.max(0, Math.trunc(amount)) : 0;
     const available = Number.isFinite(state.workspace?.credits) ? Math.max(0, Math.trunc(state.workspace.credits)) : 0;
     if (required <= 0 || available >= required) return true;
@@ -580,6 +599,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   }
 
   function reserveRunCredits(reservationId, reserveAmount, label, reason) {
+    if (!creditsEnabled) return true;
     try {
       const nextState = reserveTaskCreditsInState(state, reservationTask(reservationId, reserveAmount), {
         reservationId,
@@ -597,6 +617,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   }
 
   function releaseRunCredits(reservationId, reserveAmount, label, reason) {
+    if (!creditsEnabled) return;
     setState(current => {
       try {
         return settleTaskCreditsInState(current, reservationTask(reservationId, reserveAmount, "failed"), {
@@ -631,6 +652,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
   }
 
   function syncCreditConsume({ reservationId, taskId, amount, label, reason }) {
+    if (!creditsEnabled) return;
     const actualAmount = Number.isFinite(amount) ? Math.max(0, Math.trunc(amount)) : 0;
     if (!serverReadyRef.current || actualAmount <= 0) return;
     remote
@@ -723,6 +745,12 @@ export function AICrewStudio({ initialView = "dashboard" }) {
           ...current.exports
         ]
       };
+      if (!creditsEnabled) {
+        return addNotificationToState(nextState, {
+          level: "success",
+          title: nextTask.brief.productName + " 内容包已生成" + (nextTask.aiMeta?.used ? "（" + nextTask.aiMeta.provider + " AI）" : "")
+        });
+      }
       try {
         const settled = settleTaskCreditsInState(nextState, nextTask, {
           label: creditLabel,
@@ -779,7 +807,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
       });
     } catch (error) {
       releaseRunCredits(reservationId, quote.estimated, creditLabel, "generation");
-      setState(current => addCreditFailureNoticeToState(current, creditLabel, error));
+      setState(current => (creditsEnabled ? addCreditFailureNoticeToState(current, creditLabel, error) : addRunFailureNoticeToState(current, creditLabel, error)));
     } finally {
       generatingRef.current = false;
       setGenerating(false);
@@ -826,7 +854,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
       );
     } catch (error) {
       releaseRunCredits(reservationId, quote.estimated, creditLabel, "flow");
-      setState(current => addCreditFailureNoticeToState(current, creditLabel, error));
+      setState(current => (creditsEnabled ? addCreditFailureNoticeToState(current, creditLabel, error) : addRunFailureNoticeToState(current, creditLabel, error)));
     } finally {
       generatingRef.current = false;
       setGenerating(false);
@@ -919,6 +947,12 @@ export function AICrewStudio({ initialView = "dashboard" }) {
           tasks: nextTasks,
           projects: nextProjects
         };
+        if (!creditsEnabled) {
+          return addNotificationToState(nextState, {
+            level: "success",
+            title: "Agent 已重试：" + agentId
+          });
+        }
         const settled = settleTaskCreditsInState(nextState, nextTask, {
           label: "Agent retry: " + agentId,
           reserveAmount: retryCost,
@@ -940,7 +974,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
       });
     } catch (error) {
       releaseRunCredits(reservationId, retryCost, "Agent retry: " + agentId, "retry");
-      setState(current => addCreditFailureNoticeToState(current, "Agent retry: " + agentId, error));
+      setState(current => (creditsEnabled ? addCreditFailureNoticeToState(current, "Agent retry: " + agentId, error) : addRunFailureNoticeToState(current, "Agent retry: " + agentId, error)));
     } finally {
       setTimeout(() => {
         retryingAgentRef.current = null;
@@ -1029,6 +1063,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
         aiConfig={aiConfig}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={() => setSidebarCollapsed(value => !value)}
+        creditsEnabled={creditsEnabled}
       />
       <main className="main-surface">
         <Topbar state={state} view={view} navigate={navigate} resetDemo={resetDemo} />
@@ -1044,6 +1079,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               aiConfig={aiConfig}
               onRetryAgent={retryAgent}
               retryingAgentId={retryingAgentId}
+              creditsEnabled={creditsEnabled}
             />
           )}
           {view === "history" && (
@@ -1054,6 +1090,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               openTask={openHistoryTask}
               editTask={editHistoryTask}
               toggleLock={toggleHistoryLock}
+              creditsEnabled={creditsEnabled}
             />
           )}
           {view === "workbench" && (
@@ -1079,6 +1116,7 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               editSeed={editSeed}
               libraryMaterials={referencedMaterials}
               locked={task?.locked}
+              creditsEnabled={creditsEnabled}
             />
           )}
           {view === "canvas" && (
@@ -1101,21 +1139,22 @@ export function AICrewStudio({ initialView = "dashboard" }) {
               navigate={navigate}
             />
           )}
-          {view === "skills" && <Skills allSkills={allSkills} />}
+          {view === "skills" && <Skills allSkills={allSkills} creditsEnabled={creditsEnabled} />}
           {view === "brand" && <Brand state={state} saveBrand={saveBrand} />}
           {view === "exports" && <Exports state={state} />}
-          {view === "billing" && <Billing state={state} />}
-          {view === "admin" && <Admin state={state} />}
+          {view === "billing" && creditsEnabled && <Billing state={state} />}
+          {view === "admin" && <Admin state={state} creditsEnabled={creditsEnabled} />}
           {view === "onboarding" && <Onboarding state={state} updateProfile={updateProfile} />}
         </section>
       </main>
-      <FloatingCommandLayer state={state} view={view} navigate={navigate} manualWorkbench={view === "workbench" && workbenchMode === "manual"} />
+      <FloatingCommandLayer state={state} view={view} navigate={navigate} manualWorkbench={view === "workbench" && workbenchMode === "manual"} creditsEnabled={creditsEnabled} />
     </div>
   );
 }
 
-function Sidebar({ state, view, navigate, aiConfig, collapsed, onToggleCollapsed }) {
-  const creditRatio = Math.min(100, Math.round((state.workspace.credits / state.workspace.monthlyCredits) * 100));
+function Sidebar({ state, view, navigate, aiConfig, collapsed, onToggleCollapsed, creditsEnabled = true }) {
+  const visibleNavItems = creditsEnabled ? navItems : navItems.filter(([id]) => id !== "billing");
+  const creditRatio = creditsEnabled ? Math.min(100, Math.round((state.workspace.credits / state.workspace.monthlyCredits) * 100)) : 0;
   return (
     <aside className={`sidebar ${collapsed ? "is-collapsed" : ""}`}>
       <div className="sidebar-head">
@@ -1139,7 +1178,7 @@ function Sidebar({ state, view, navigate, aiConfig, collapsed, onToggleCollapsed
       </div>
       <SidebarAssistant state={state} aiConfig={aiConfig} navigate={navigate} />
       <nav className="nav-list" aria-label="Main navigation">
-        {navItems.map(([id, label, icon]) => (
+        {visibleNavItems.map(([id, label, icon]) => (
           <a
             className={`nav-item ${view === id ? "active" : ""}`}
             href={hrefFor(id)}
@@ -1154,15 +1193,17 @@ function Sidebar({ state, view, navigate, aiConfig, collapsed, onToggleCollapsed
           </a>
         ))}
       </nav>
-      <div className="sidebar-footer">
-        <div className="credit-ring" style={{ "--value": creditRatio }}>
-          <span>{state.workspace.credits}</span>
-          <small>credits</small>
+      {creditsEnabled && (
+        <div className="sidebar-footer">
+          <div className="credit-ring" style={{ "--value": creditRatio }}>
+            <span>{state.workspace.credits}</span>
+            <small>credits</small>
+          </div>
+          <button className="text-link reset-button" onClick={() => navigate("billing")}>
+            Studio plan
+          </button>
         </div>
-        <button className="text-link reset-button" onClick={() => navigate("billing")}>
-          Studio plan
-        </button>
-      </div>
+      )}
     </aside>
   );
 }
@@ -1225,7 +1266,7 @@ function Topbar({ state, view, navigate, resetDemo }) {
   );
 }
 
-function FloatingCommandLayer({ state, view, navigate, manualWorkbench }) {
+function FloatingCommandLayer({ state, view, navigate, manualWorkbench, creditsEnabled = true }) {
   const latestTask = state.tasks?.[0];
   const agentsOnline = latestTask?.agents?.length || 0;
   // 画布视图自带真实工具坞，隐藏全局装饰 dock 避免双坞重叠。
@@ -1251,15 +1292,15 @@ function FloatingCommandLayer({ state, view, navigate, manualWorkbench }) {
       {!manualWorkbench && (
         <div className="zoom-dock" aria-label="Canvas status">
           <span>{agentsOnline} agents</span>
-          <strong>{state.workspace.credits.toLocaleString()}</strong>
-          <em>credits</em>
+          {creditsEnabled && <strong>{state.workspace.credits.toLocaleString()}</strong>}
+          {creditsEnabled && <em>credits</em>}
         </div>
       )}
     </div>
   );
 }
 
-function Dashboard({ state, task, project, generateQuick, navigate, generating, aiConfig, onRetryAgent, retryingAgentId }) {
+function Dashboard({ state, task, project, generateQuick, navigate, generating, aiConfig, onRetryAgent, retryingAgentId, creditsEnabled = true }) {
   const completionRate = state.tasks.length
     ? Math.round((state.tasks.filter(item => item.status === "completed").length / state.tasks.length) * 100)
     : 0;
@@ -1295,7 +1336,7 @@ function Dashboard({ state, task, project, generateQuick, navigate, generating, 
       <section className="metric-strip">
         <Metric label="完成率" value={`${completionRate}%`} caption="completed / submitted" />
         <Metric label="平均质量分" value={project?.qualityScore || 0} caption="QA weighted score" />
-        <Metric label="可用积分" value={state.workspace.credits.toLocaleString()} caption="current balance" />
+        {creditsEnabled && <Metric label="可用积分" value={state.workspace.credits.toLocaleString()} caption="current balance" />}
         <Metric label="导出包" value={state.exports.length} caption="ready packages" />
       </section>
       <section className="panel wide">
@@ -1308,7 +1349,7 @@ function Dashboard({ state, task, project, generateQuick, navigate, generating, 
             Open workbench
           </button>
         </div>
-        <AgentTimeline task={task} onRetry={onRetryAgent} locked={task?.locked} retryingAgentId={retryingAgentId} />
+        <AgentTimeline task={task} onRetry={onRetryAgent} locked={task?.locked} retryingAgentId={retryingAgentId} creditsEnabled={creditsEnabled} />
       </section>
       <section className="panel">
         <div className="panel-heading">
@@ -1326,7 +1367,7 @@ function Dashboard({ state, task, project, generateQuick, navigate, generating, 
             <h3>任务状态</h3>
           </div>
         </div>
-        <TaskTable tasks={state.tasks.slice(0, 5)} />
+        <TaskTable tasks={state.tasks.slice(0, 5)} creditsEnabled={creditsEnabled} />
       </section>
     </div>
   );
@@ -1353,7 +1394,8 @@ function Workbench({
   onGenerateImage,
   editSeed,
   libraryMaterials = [],
-  locked
+  locked,
+  creditsEnabled = true
 }) {
   // orchestrator mode 上提到 Workbench：手动模式要让画布占右侧主栏、隐藏 OUTPUT/Runtime，
   // 这些决策在 OrchestratorConsole 之外，故 mode 必须由外层持有并按其重排布局。
@@ -1392,6 +1434,7 @@ function Workbench({
         onGenerateImage={onGenerateImage}
         editSeed={editSeed}
         libraryMaterials={libraryMaterials}
+        creditsEnabled={creditsEnabled}
       />
       {/* 手动模式：流程画布接管右侧主区；OUTPUT + Runtime 默认隐藏，运行后于画布下方整宽显现 */}
       {showOutput && (
@@ -1442,9 +1485,9 @@ function Workbench({
             <p className="eyebrow">Runtime</p>
             <h3>Agent 执行记录</h3>
           </div>
-          <span className="status-chip">{task?.credits.actual || 0} credits</span>
+          {creditsEnabled && <span className="status-chip">{task?.credits.actual || 0} credits</span>}
         </div>
-        <AgentTimeline task={task} onRetry={onRetryAgent} locked={task?.locked} retryingAgentId={retryingAgentId} />
+        <AgentTimeline task={task} onRetry={onRetryAgent} locked={task?.locked} retryingAgentId={retryingAgentId} creditsEnabled={creditsEnabled} />
         <QaBox task={task} />
       </section>
         </>
@@ -1453,7 +1496,7 @@ function Workbench({
   );
 }
 
-function History({ state, selectedTaskId, selectTask, openTask, editTask, toggleLock }) {
+function History({ state, selectedTaskId, selectTask, openTask, editTask, toggleLock, creditsEnabled = true }) {
   const projectByTask = new Map((state.projects || []).map(project => [project.taskId, project]));
   const selectedTask = state.tasks.find(task => task.id === selectedTaskId) || state.tasks[0];
   return (
@@ -1490,7 +1533,7 @@ function History({ state, selectedTaskId, selectTask, openTask, editTask, toggle
                     <span>{item.variants?.length || 0} variants</span>
                     <span>{item.agents?.length || 0} agents</span>
                     <span>{materialCount} references</span>
-                    <span>{item.credits?.actual || 0} credits</span>
+                    {creditsEnabled && <span>{item.credits?.actual || 0} credits</span>}
                     {locked && <span>locked</span>}
                   </div>
                   <div className="history-actions">
@@ -1687,7 +1730,7 @@ function Assets({ state, addAsset, referencedAssetIds = [], toggleAssetReference
     </div>
   );
 }
-function Skills({ allSkills }) {
+function Skills({ allSkills, creditsEnabled = true }) {
   return (
     <div className="page-grid">
       <section className="panel wide">
@@ -1974,7 +2017,7 @@ function Billing({ state }) {
   );
 }
 
-function Admin({ state }) {
+function Admin({ state, creditsEnabled = true }) {
   return (
     <div className="page-grid two">
       <section className="panel wide">
@@ -1984,7 +2027,7 @@ function Admin({ state }) {
             <h3>任务与成本监控</h3>
           </div>
         </div>
-        <TaskTable tasks={state.tasks} />
+        <TaskTable tasks={state.tasks} creditsEnabled={creditsEnabled} />
       </section>
       <section className="panel">
         <div className="panel-heading">
@@ -2184,7 +2227,7 @@ function AiSettings({ aiConfig, onSelectionChange, onRefresh, agentCatalog }) {
                   <dd>{agent.evaluation}</dd>
                 </div>
               </dl>
-              <em>{agent.cost} credits / retry</em>
+              {creditsEnabled && <em>{agent.cost} credits / retry</em>}
             </article>
           ))}
         </div>
@@ -2240,7 +2283,7 @@ function statusLabel(status) {
   return TASK_STATUS_LABELS[status] || status || "";
 }
 
-function AgentTimeline({ task, onRetry, locked = false, retryingAgentId = null }) {
+function AgentTimeline({ task, onRetry, locked = false, retryingAgentId = null, creditsEnabled = true }) {
   if (!task) return <p className="empty-state">No active task</p>;
   const recentEvents = (task.events || []).slice(-4).reverse();
   return (
@@ -2296,7 +2339,7 @@ function AgentTimeline({ task, onRetry, locked = false, retryingAgentId = null }
                     <dd>{agent.evaluation || "Completed"}</dd>
                   </div>
                 </dl>
-                <small>{agent.cost || 0} credits · {agent.status}</small>
+                <small>{creditsEnabled ? `${agent.cost || 0} credits · ` : ""}{agent.status}</small>
               </details>
             </div>
           </article>
@@ -2308,7 +2351,7 @@ function AgentTimeline({ task, onRetry, locked = false, retryingAgentId = null }
             <p key={event.id}>
               <span>{event.event}</span>
               <strong>{event.agent}</strong>
-              <em>{event.credits} cr</em>
+              {creditsEnabled && <em>{event.credits} cr</em>}
             </p>
           ))}
         </div>
@@ -2430,7 +2473,7 @@ function QaBox({ task }) {
   );
 }
 
-function TaskTable({ tasks }) {
+function TaskTable({ tasks, creditsEnabled = true }) {
   return (
     <div className="task-table">
       {tasks.map(task => (
@@ -2442,7 +2485,7 @@ function TaskTable({ tasks }) {
             </span>
           </div>
           <span className={"status-chip status-chip--" + task.status}>{statusLabel(task.status)}</span>
-          <strong>{task.credits.actual}</strong>
+          {creditsEnabled && <strong>{task.credits.actual}</strong>}
         </article>
       ))}
     </div>

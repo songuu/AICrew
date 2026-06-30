@@ -62,7 +62,7 @@ const PLACEHOLDER = "用一句话描述你的创意，例如：给露营灯做�
 // 卡片点击即选中并播种 flow（onPick → onPickSkill）；分组 / 列表由 domain 的
 // skillGroups / skillsInGroup 单一数据源驱动，UI 不重复硬编码分组逻辑。
 // 单张技能卡：在扁平列表 / 漏斗分段 / 推荐行三处复用，避免重复模板。
-function SkillCard({ skill, active, busy, onPick }) {
+function SkillCard({ skill, active, busy, onPick, creditsEnabled = true }) {
   return (
     <button
       type="button"
@@ -82,7 +82,7 @@ function SkillCard({ skill, active, busy, onPick }) {
         </span>
         <small>{skill.promise}</small>
         <span className="oc-skill-card-foot">
-          ≈ {skill.estimatedCredits} credits · {skill.formats?.[0]}
+          {creditsEnabled ? `≈ ${skill.estimatedCredits} credits · ${skill.formats?.[0]}` : skill.formats?.[0]}
         </span>
       </span>
       {active && (
@@ -94,14 +94,14 @@ function SkillCard({ skill, active, busy, onPick }) {
   );
 }
 
-function SkillPickerPanel({ tab, onTab, selectedId, onPick, onClose, busy, query }) {
+function SkillPickerPanel({ tab, onTab, selectedId, onPick, onClose, busy, query, creditsEnabled = true }) {
   // 获客平台 tab（小红书/抖音/视频号）→ 按获客漏斗阶段分段渲染 + 顶部意图推荐行；
   // 其余分类（推荐/电商/美妆/短视频）→ 扁平列表（行为不变）。数据全部来自 domain 单一来源。
   const funnel = isPromotionGroup(tab) ? promotionFunnelForGroup(tab) : null;
   const flatList = funnel ? null : skillsInGroup(tab);
   const recommended = funnel && query && query.trim() ? recommendForGroup(tab, { query, limit: 3 }) : [];
   const renderCard = skill => (
-    <SkillCard key={skill.id} skill={skill} active={selectedId === skill.id} busy={busy} onPick={onPick} />
+    <SkillCard key={skill.id} skill={skill} active={selectedId === skill.id} busy={busy} onPick={onPick} creditsEnabled={creditsEnabled} />
   );
   return (
     <>
@@ -226,7 +226,7 @@ function FlowOverlay({ flow }) {
   );
 }
 
-export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task, mode, onModeChange, onGenerateImage, editSeed, libraryMaterials = [] }) {
+export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task, mode, onModeChange, onGenerateImage, editSeed, libraryMaterials = [], creditsEnabled = true }) {
   const [idea, setIdea] = useState("给露营灯做一组小红书种草笔记");
   const [flow, setFlow] = useState(() => createFlow("auto"));
   const [route, setRoute] = useState(null); // {rationale, matchedSkill, summary, brief}
@@ -476,7 +476,7 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
             <p className="eyebrow">Orchestrator</p>
             <h3>中枢编排台</h3>
           </div>
-          <span className="oc-credit-chip" title="按所选 Agent 估算">≈ {estimatedCredits} credits</span>
+          {creditsEnabled && <span className="oc-credit-chip" title="按所选 Agent 估算">≈ {estimatedCredits} credits</span>}
         </div>
 
         <p className="oc-mode-eyebrow">MODE · 一个 Flow，三种创作方式</p>
@@ -580,6 +580,7 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
           onClose={() => setSkillPickerOpen(false)}
           busy={busy}
           query={idea}
+          creditsEnabled={creditsEnabled}
         />
       )}
     </div>
@@ -819,7 +820,7 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
                 >
                   <span className="oc-chip-dot" />
                   {agent.title}
-                  <em>{agent.cost}</em>
+                  {creditsEnabled && <em>{agent.cost}</em>}
                 </button>
               );
             })}
