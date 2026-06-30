@@ -39,6 +39,14 @@ import {
 import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
 import { runFlow, runFlowWithAI } from "../lib/flow/execute.js";
 import { REDNOTE_PUBLISH_DEEPLINK, REDNOTE_PUBLISH_STEPS, supportsRednoteHandoff, buildRednoteShareText } from "../lib/share/rednote.js";
+import { stripCollectionMedia } from "../lib/state/storage-sanitize.js";
+import {
+  setTaskScheduledAt,
+  selectRednoteExportsForTask,
+  isTaskScheduleEligible,
+  selectDueTasks
+} from "../lib/schedule/queue.js";
+import { buildIcsCalendar, buildScheduleUid } from "../lib/share/ics.js";
 import { flowToSkill } from "../lib/flow/model.js";
 import { stashVariantImages, rehydrateVariantImages, stashLibraryAssets, rehydrateLibraryAssets, IMAGE_STORE_KEY, STASH_UNBOUNDED } from "../lib/storage/imageStore.js";
 import { validateLibraryAsset, normalizeLibraryAsset, normalizeMaterial } from "../lib/storage/materialStore.js";
@@ -163,6 +171,43 @@ async function downloadImageFile(file) {
   }
 }
 
+// .ics 日历文件下载：把排期事件交给用户 OS 日历（到点前原生提醒，tab 关也响）——
+// 静态站无后台 push，日历是唯一「tab 关也准时」的零后端提醒主轨。
+function downloadIcsFile(name, ics) {
+  const url = URL.createObjectURL(new Blob([ics], { type: "text/calendar" }));
+  triggerBrowserDownload(name, url, true);
+}
+
+// ISO UTC 串 ↔ <input type="datetime-local"> 本地值互转。input 用本地墙钟方便用户，
+// 存储与 .ics 一律归一到 UTC（toISOString），杜绝 floating time 漂移。
+function isoToLocalInput(iso) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = value => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function localInputToIso(localValue) {
+  if (!localValue) return null;
+  const date = new Date(localValue);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+// 到点轮询间隔：1min。对齐后台标签浏览器对 setInterval 的 ≥1min 节流下限；
+// 准时性由 .ics OS 日历主轨兜底，本辅轨仅 tab 开时有效。
+const DUE_POLL_INTERVAL_MS = 60000;
+
+// task 的展示用产品名（缺省回退「内容」），统一一处避免默认串散落。
+function taskProductName(task) {
+  return task?.brief?.productName || "内容";
+}
+
+// scheduledAt 是否为可解析的有效时刻（防损坏/篡改存储里的非 ISO truthy 串触发下游抛出）。
+function hasValidSchedule(task) {
+  return Boolean(task?.scheduledAt) && !Number.isNaN(Date.parse(task.scheduledAt));
+}
+
 // —— 小红书一键带稿交接（Tier 0）的浏览器副作用层 ——
 // 纯逻辑在 lib/share/rednote.js；这里只做 clipboard / Web Share / 文件抓取，全部带兜底。
 
@@ -282,12 +327,12 @@ function stripAssetMedia(asset) {
 }
 
 function sanitizeStateForStorage(state) {
-  const stripList = list =>
-    (list || []).map(item => (item?.variants ? { ...item, variants: item.variants.map(stripVariantMedia) } : item));
+  // 用纯逻辑 stripCollectionMedia 保证 task/project 项级标量（含 task.scheduledAt 排期）存活，
+  // 只剥变体媒体；契约由 lib/state/storage-sanitize.js 单测守护（见 tests/schedule-persistence.test.js）。
   return {
     ...state,
-    tasks: stripList(state.tasks),
-    projects: stripList(state.projects),
+    tasks: stripCollectionMedia(state.tasks, stripVariantMedia),
+    projects: stripCollectionMedia(state.projects, stripVariantMedia),
     exports: (state.exports || []).map(stripExportMedia),
     assets: (state.assets || []).map(stripAssetMedia)
   };
@@ -381,6 +426,9 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
   const serverReadyRef = useRef(false);
   const generatingRef = useRef(false);
   const retryingAgentRef = useRef(null);
+  // 排期到点提醒（站内 toast 辅轨）：最新态镜像 + 已触发去重集合。见下方 due-poll useEffect。
+  const dueReminderStateRef = useRef(null);
+  const firedRemindersRef = useRef(new Set());
 
   useEffect(() => {
     let alive = true;
@@ -517,6 +565,49 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
     }
   }, [task?.id, selectedTaskId, selectedVariantId]);
 
+  // 排期到点最新态镜像（标准 latest-ref 模式，放进 effect 保持 render 纯度）。
+  useEffect(() => {
+    dueReminderStateRef.current = state;
+  }, [state]);
+
+  // 排期到点「站内 toast 辅轨」+ 到期队列时钟驱动：净新增单个周期计时器（全仓首个 setInterval）。
+  // 每 tick 既刷新 nowTick（显式驱动 DueScheduleQueue 到点重渲染，render 保持纯函数、不在 render 内读时钟），
+  // 又补发到点 toast。仅 tab 开时有效，后台标签被节流到 ≥1min——准时性由 .ics OS 日历主轨兜底。
+  // 双重去重：内存 firedRef（本会话，改期自动重新武装）+ 已落库 notifications 的 reminderKey（跨刷新），
+  // 杜绝过期排期每次刷新重复追加致 notifications 无界增长。卸载时 clearInterval。
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    function checkDueSchedules() {
+      const stamp = Date.now();
+      setNowTick(stamp);
+      const snapshot = dueReminderStateRef.current;
+      if (!snapshot) return;
+      const persistedKeys = new Set(
+        (snapshot.notifications || []).map(notice => notice.reminderKey).filter(Boolean)
+      );
+      const fresh = selectDueTasks(snapshot, stamp).filter(item => {
+        const key = `${item.id}:${item.scheduledAt}`;
+        return !firedRemindersRef.current.has(key) && !persistedKeys.has(key);
+      });
+      if (!fresh.length) return;
+      fresh.forEach(item => firedRemindersRef.current.add(`${item.id}:${item.scheduledAt}`));
+      setState(current =>
+        fresh.reduce(
+          (acc, item) =>
+            addNotificationToState(acc, {
+              level: "info",
+              reminderKey: `${item.id}:${item.scheduledAt}`,
+              title: `排期到点：${taskProductName(item)} 可一键带稿去小红书发布`
+            }),
+          current
+        )
+      );
+    }
+    checkDueSchedules();
+    const timer = setInterval(checkDueSchedules, DUE_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, []);
+
   function navigate(nextView) {
     const targetView = !creditsEnabled && nextView === "billing" ? "dashboard" : nextView;
     setView(targetView);
@@ -550,6 +641,12 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
   function toggleHistoryLock(taskId) {
     const nextTask = state?.tasks?.find(item => item.id === taskId);
     setState(current => setTaskLocked(current, taskId, !nextTask?.locked));
+  }
+
+  // 排期层：给 task 设/清排期时间（ISO UTC 串或 null）。纯逻辑落 lib/schedule/queue.js，
+  // 写入即随顶层 [state] effect 的 600ms debounce→replace-all 持久化到 aicrew_tasks.payload。
+  function setTaskSchedule(taskId, isoUtc) {
+    setState(current => setTaskScheduledAt(current, taskId, isoUtc));
   }
 
   function toggleAssetReference(assetId) {
@@ -1105,6 +1202,8 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
               openTask={openHistoryTask}
               editTask={editHistoryTask}
               toggleLock={toggleHistoryLock}
+              setTaskSchedule={setTaskSchedule}
+              now={nowTick}
               creditsEnabled={creditsEnabled}
             />
           )}
@@ -1511,11 +1610,13 @@ function Workbench({
   );
 }
 
-function History({ state, selectedTaskId, selectTask, openTask, editTask, toggleLock, creditsEnabled = true }) {
+function History({ state, selectedTaskId, selectTask, openTask, editTask, toggleLock, setTaskSchedule, now, creditsEnabled = true }) {
   const projectByTask = new Map((state.projects || []).map(project => [project.taskId, project]));
   const selectedTask = state.tasks.find(task => task.id === selectedTaskId) || state.tasks[0];
   return (
-    <div className="page-grid two history-page">
+    <>
+      <DueScheduleQueue state={state} now={now} />
+      <div className="page-grid two history-page">
       <section className="panel wide">
         <div className="panel-heading">
           <div>
@@ -1562,6 +1663,9 @@ function History({ state, selectedTaskId, selectTask, openTask, editTask, toggle
                       {locked ? "解锁" : "锁定"}
                     </button>
                   </div>
+                  {isTaskScheduleEligible(item) && (
+                    <ScheduleControl task={item} onSchedule={setTaskSchedule} />
+                  )}
                 </div>
                 <div className={`score-badge ${qualityTone(project?.qualityScore || item.qa?.overallScore || 0)}`}>
                   {project?.qualityScore || item.qa?.overallScore || 0}
@@ -1587,7 +1691,8 @@ function History({ state, selectedTaskId, selectTask, openTask, editTask, toggle
         <HistoryEffect task={selectedTask} />
         <AgentTimeline task={selectedTask} />
       </section>
-    </div>
+      </div>
+    </>
   );
 }
 // 历史「之前的效果」面板：把所选历史任务的真实产出（封面预览 + 文案 + 评分）就地铺开，
@@ -1875,6 +1980,110 @@ function Brand({ state, saveBrand }) {
 }
 
 // 小红书一键带稿交接行：复制文案 / 系统分享带图 / 唤起官方发布器。
+// 排期控件（绿区半自动）：给含小红书产物的 task 设/清排期时间，并导出 .ics 日历事件。
+// 仅在 isTaskScheduleEligible(task) 为真时由 History 渲染（调用方门控）。input 用本地墙钟，
+// 存储/.ics 一律 UTC。到点提醒走 OS 日历(.ics 主轨) + 站内 toast(辅轨) 双轨。
+function ScheduleControl({ task, onSchedule }) {
+  const [value, setValue] = useState(isoToLocalInput(task?.scheduledAt));
+  useEffect(() => {
+    setValue(isoToLocalInput(task?.scheduledAt));
+  }, [task?.id, task?.scheduledAt]);
+
+  function commit(nextLocal) {
+    setValue(nextLocal);
+    onSchedule(task.id, localInputToIso(nextLocal));
+  }
+
+  function downloadIcs() {
+    // 仅对可解析时刻导出，挡掉损坏/篡改存储里的非 ISO truthy 串，避免 buildIcsCalendar 抛出。
+    if (!hasValidSchedule(task)) return;
+    const productName = taskProductName(task);
+    const ics = buildIcsCalendar({
+      uid: buildScheduleUid(task.id, task.scheduledAt),
+      title: `小红书带稿发布：${productName}`,
+      description: "AICrew 排期到点，可一键带稿去小红书发布器手动确认发布。",
+      startUtc: task.scheduledAt
+    });
+    downloadIcsFile(`aicrew-${productName}-排期.ics`, ics);
+  }
+
+  return (
+    <div className="schedule-control">
+      <label className="schedule-control-label">排期发布</label>
+      <input
+        type="datetime-local"
+        className="schedule-control-input"
+        value={value}
+        onChange={event => commit(event.target.value)}
+      />
+      <div className="schedule-control-actions">
+        <button
+          type="button"
+          className="ghost-btn"
+          onClick={downloadIcs}
+          disabled={!hasValidSchedule(task)}
+          title="导出到系统日历，到点前原生提醒"
+        >
+          🗓 加入日历(.ics)
+        </button>
+        {task?.scheduledAt && (
+          <button type="button" className="ghost-btn" onClick={() => commit("")}>
+            清除排期
+          </button>
+        )}
+      </div>
+      {task?.scheduledAt && (
+        <small className="schedule-control-hint">
+          部分日历（如 Google）会忽略内置提醒、改用其默认通知；站内提醒仅在打开本页时生效。
+        </small>
+      )}
+    </div>
+  );
+}
+
+// 排期到期队列（最后一公里）：列出到点/逾期且含小红书产物的 task，逐产物复用 RednoteHandoff
+// 一键带稿唤起官方发布器（人工确认）。imageFiles 经 assembleExportBundle 派生，强制带图不丢图。
+function DueScheduleQueue({ state, now }) {
+  const dueTasks = selectDueTasks(state, now);
+  if (!dueTasks.length) return null;
+  return (
+    <section className="panel schedule-due-panel">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">Scheduled</p>
+          <h3>到期排期 · 可发布</h3>
+        </div>
+        <span className="status-chip">{dueTasks.length} due</span>
+      </div>
+      <div className="schedule-due-list">
+        {dueTasks.map(task => {
+          const rednoteExports = selectRednoteExportsForTask(task);
+          const productName = taskProductName(task);
+          return (
+            <article className="schedule-due-row" key={task.id}>
+              <div className="schedule-due-title">
+                <strong>{productName}</strong>
+                <span>排期 {formatDate(task.scheduledAt)} · {rednoteExports.length} 篇小红书</span>
+              </div>
+              {rednoteExports.map(item => {
+                const variant =
+                  (task.variants || []).find(entry => entry.id === item.variantId) || task.variants?.[0];
+                const bundle = assembleExportBundle(item, variant);
+                return (
+                  <div className="schedule-due-export" key={item.variantId || item.name}>
+                    <span className="schedule-due-export-name">{item.name}</span>
+                    <RednoteHandoff variant={variant} imageFiles={bundle.imageFiles} />
+                  </div>
+                );
+              })}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 // 对标小鸡AI App 的发布交接，但终点是用户在小红书发布器手动确认，不做任何自动发布。
 function RednoteHandoff({ variant, imageFiles }) {
   const [status, setStatus] = useState("");
