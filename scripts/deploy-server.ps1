@@ -238,7 +238,7 @@ $quotedAppName = Quote-BashValue $AppName
 $quotedHostName = Quote-BashValue $HostName
 $quotedPort = Quote-BashValue ([string]$Port)
 
-$installCommand = 'runtime_deps_match() { node -e ''const fs=require("fs"); const [currentPath,releasePath]=process.argv.slice(1); const pick=(root)=>{const pkg=JSON.parse(fs.readFileSync(`${root}/package.json`,"utf8")); return JSON.stringify({dependencies:pkg.dependencies||{},optionalDependencies:pkg.optionalDependencies||{},peerDependencies:pkg.peerDependencies||{},overrides:pkg.overrides||{}});}; process.exit(pick(currentPath)===pick(releasePath)?0:1);'' "$C" "$D"; }; if [ -d "$C/node_modules" ] && { cmp -s "$C/package-lock.json" "$D/package-lock.json" || runtime_deps_match; }; then cp -a "$C/node_modules" "$D/node_modules"; echo "Reused current node_modules"; else npm ci --omit=dev --no-audit --no-fund; fi'
+$installCommand = 'if [ -d "$C/node_modules" ] && cmp -s "$C/package-lock.json" "$D/package-lock.json"; then cp -a "$C/node_modules" "$D/node_modules"; echo "Reused current node_modules"; else npm ci --omit=dev --no-audit --no-fund; fi'
 if ($SkipRemoteInstall) {
   $installCommand = "echo 'Skipping remote dependency install'"
 }
@@ -277,23 +277,18 @@ Invoke-Native "ssh" @("-o", "BatchMode=yes", $DeployHost, $remoteDeploy)
 if (-not $SkipVerify) {
   Step "Remote verification"
   $quotedDirectUrl = Quote-BashValue "http://$HostName`:$Port$resolvedBasePath/api/ai/config/"
-  $quotedLoopbackUrl = Quote-BashValue "https://127.0.0.1$resolvedBasePath/api/ai/config/"
-  $quotedDomainHeader = Quote-BashValue "Host: $Domain"
-  $expectedCreditsJson = if ($expectedCreditsEnabled) { '"creditsEnabled":true' } else { '"creditsEnabled":false' }
-  $quotedExpectedCreditsJson = Quote-BashValue $expectedCreditsJson
+  $expectedCreditsPattern = if ($expectedCreditsEnabled) { 'creditsEnabled.:true' } else { 'creditsEnabled.:false' }
+  $quotedExpectedCreditsPattern = Quote-BashValue $expectedCreditsPattern
+  $quotedConfiguredPattern = Quote-BashValue 'configured.:true'
   $verify = @(
     "set -e",
     "DIRECT=$quotedDirectUrl",
-    "LOOP=$quotedLoopbackUrl",
-    "H=$quotedDomainHeader",
-    "EXPECT_CREDITS=$quotedExpectedCreditsJson",
-    'direct_json=$(curl -fsSL "$DIRECT")',
-    'echo "$direct_json" | grep -q ''"configured":true''',
-    'echo "$direct_json" | grep -q "$EXPECT_CREDITS"',
-    'loop_json=$(curl -fkSLsS -H "$H" "$LOOP")',
-    'echo "$loop_json" | grep -q ''"configured":true''',
-    'echo "$loop_json" | grep -q "$EXPECT_CREDITS"',
-    'echo "AI config route verified ($EXPECT_CREDITS)"'
+    "EXPECT_CONFIGURED=$quotedConfiguredPattern",
+    "EXPECT_CREDITS=$quotedExpectedCreditsPattern",
+    'direct_json=$(curl -fsSL $DIRECT)',
+    'printf %s "$direct_json" | grep -Eq $EXPECT_CONFIGURED',
+    'printf %s "$direct_json" | grep -Eq $EXPECT_CREDITS',
+    'echo "AI config route verified: $EXPECT_CREDITS"'
   ) -join '; '
   Invoke-Native "ssh" @("-o", "BatchMode=yes", $DeployHost, $verify)
 
@@ -304,6 +299,17 @@ if (-not $SkipVerify) {
   if ($status -ne "200") {
     throw "Public verification failed: $publicUrl -> $status"
   }
+
+  $publicConfigUrl = "https://$Domain$resolvedBasePath/api/ai/config"
+  $publicConfig = (curl.exe -k -fsSL $publicConfigUrl)
+  if (-not ($publicConfig -match '"configured":true')) {
+    throw "Public config verification failed: configured flag missing"
+  }
+  $expectedCreditsJson = if ($expectedCreditsEnabled) { '"creditsEnabled":true' } else { '"creditsEnabled":false' }
+  if (-not $publicConfig.Contains($expectedCreditsJson)) {
+    throw "Public config verification failed: expected $expectedCreditsJson"
+  }
+  Write-Host "$publicConfigUrl -> $expectedCreditsJson"
 }
 
 if (-not $KeepArchive) {
