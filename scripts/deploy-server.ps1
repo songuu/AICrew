@@ -103,6 +103,33 @@ function Read-EnvNames([string]$PathValue) {
   return $names
 }
 
+function Read-EnvValues([string]$PathValue) {
+  $values = @{}
+  foreach ($line in Get-Content -LiteralPath $PathValue) {
+    $trimmed = $line.Trim()
+    if ($trimmed -eq "" -or $trimmed.StartsWith("#")) { continue }
+    $equals = $trimmed.IndexOf("=")
+    if ($equals -le 0) { continue }
+    $name = $trimmed.Substring(0, $equals).Trim()
+    $value = $trimmed.Substring($equals + 1).Trim()
+    if ($value.Length -ge 2) {
+      $first = $value.Substring(0, 1)
+      $last = $value.Substring($value.Length - 1, 1)
+      if (($first -eq '"' -and $last -eq '"') -or ($first -eq "'" -and $last -eq "'")) {
+        $value = $value.Substring(1, $value.Length - 2)
+      }
+    }
+    $values[$name] = $value
+  }
+  return $values
+}
+
+function Test-EnabledFlag([string]$Value, [bool]$Fallback) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $Fallback }
+  $disabledValues = @("0", "false", "off", "no", "disabled")
+  return -not ($disabledValues -contains $Value.Trim().ToLowerInvariant())
+}
+
 function Write-ConfigLine([string]$Label, [string]$Value) {
   Write-Host ("  {0,-18} {1}" -f $Label, $Value)
 }
@@ -123,13 +150,23 @@ Write-ConfigLine "Env file" $EnvFile
 Step "Project env gate"
 Require-Path $resolvedEnvFile "project env file"
 $envNames = Read-EnvNames $resolvedEnvFile
+$envValues = Read-EnvValues $resolvedEnvFile
 $requiredEnv = @("AICREW_AI_BASE_URL", "AICREW_AI_API_KEY", "AICREW_AI_TEXT_MODEL")
 $missingEnv = @($requiredEnv | Where-Object { -not $envNames.Contains($_) })
 if ($missingEnv.Count -gt 0) {
   throw "Missing required env values in ${EnvFile}: $($missingEnv -join ', ')"
 }
+$creditsFlagValue = $null
+if ($envValues.ContainsKey("NEXT_PUBLIC_AICREW_CREDITS_ENABLED")) {
+  $creditsFlagValue = $envValues["NEXT_PUBLIC_AICREW_CREDITS_ENABLED"]
+} elseif ($envValues.ContainsKey("AICREW_CREDITS_ENABLED")) {
+  $creditsFlagValue = $envValues["AICREW_CREDITS_ENABLED"]
+}
+$expectedCreditsEnabled = Test-EnabledFlag $creditsFlagValue $true
+$creditsExpectationLabel = if ($expectedCreditsEnabled) { "enabled" } else { "disabled" }
 Write-Host "Project env present: $EnvFile"
 Write-Host "Required AI env present: $($requiredEnv -join ', ')"
+Write-Host "Credits system expected: $creditsExpectationLabel"
 
 if ($DryRun) {
   Write-Host "DryRun: config and env gate only. No tests, build, upload, remote swap, or verification." -ForegroundColor Yellow
@@ -242,16 +279,21 @@ if (-not $SkipVerify) {
   $quotedDirectUrl = Quote-BashValue "http://$HostName`:$Port$resolvedBasePath/api/ai/config/"
   $quotedLoopbackUrl = Quote-BashValue "https://127.0.0.1$resolvedBasePath/api/ai/config/"
   $quotedDomainHeader = Quote-BashValue "Host: $Domain"
+  $expectedCreditsJson = if ($expectedCreditsEnabled) { '"creditsEnabled":true' } else { '"creditsEnabled":false' }
+  $quotedExpectedCreditsJson = Quote-BashValue $expectedCreditsJson
   $verify = @(
     "set -e",
     "DIRECT=$quotedDirectUrl",
     "LOOP=$quotedLoopbackUrl",
     "H=$quotedDomainHeader",
-    'direct_json=$(curl -fsS "$DIRECT")',
+    "EXPECT_CREDITS=$quotedExpectedCreditsJson",
+    'direct_json=$(curl -fsSL "$DIRECT")',
     'echo "$direct_json" | grep -q ''"configured":true''',
-    'loop_json=$(curl -fskS -H "$H" "$LOOP")',
+    'echo "$direct_json" | grep -q "$EXPECT_CREDITS"',
+    'loop_json=$(curl -fkSLsS -H "$H" "$LOOP")',
     'echo "$loop_json" | grep -q ''"configured":true''',
-    'echo "AI config route verified"'
+    'echo "$loop_json" | grep -q "$EXPECT_CREDITS"',
+    'echo "AI config route verified ($EXPECT_CREDITS)"'
   ) -join '; '
   Invoke-Native "ssh" @("-o", "BatchMode=yes", $DeployHost, $verify)
 
