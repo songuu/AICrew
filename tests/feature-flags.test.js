@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { areCreditsEnabled, normalizeFeatureFlags } from "../lib/feature-flags.js";
+import { areCreditsEnabled, normalizeFeatureFlags, publicFeatureFlagsFromEnv } from "../lib/feature-flags.js";
 import { normalizeSystemAiConfig } from "../lib/ai/config.js";
 import { createSystemAiRuntime, publicSystemAiConfig } from "../lib/ai/server-config.js";
 
@@ -23,6 +23,13 @@ test("feature flags prefer explicit public env over private fallback", () => {
   );
 });
 
+
+test("public feature flags parse build-time env for the client initial render", () => {
+  assert.deepEqual(
+    publicFeatureFlagsFromEnv({ NEXT_PUBLIC_AICREW_CREDITS_ENABLED: "0" }),
+    { creditsEnabled: false }
+  );
+});
 test("public AI config exposes credits feature flag without leaking secrets", () => {
   const runtime = createSystemAiRuntime({
     AICREW_AI_BASE_URL: "https://ai.example.com/v1",

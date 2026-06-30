@@ -49,6 +49,7 @@ import * as remote from "../lib/storage/remote.js";
 import { renderBrandImageHint } from "../lib/brand/prompt.js";
 import { CanvasStudio } from "./canvas/CanvasStudio.jsx";
 import { OrchestratorConsole } from "./OrchestratorConsole.jsx";
+import { publicFeatureFlagsFromEnv } from "../lib/feature-flags.js";
 
 const storageKey = "aicrew-studio-next-state-v1";
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/aicrew";
@@ -315,6 +316,14 @@ async function resolveAiSelection(config) {
   return loadAiSelection(config);
 }
 
+function initialSystemAiConfig(input) {
+  return normalizeSystemAiConfig(input || {
+    features: publicFeatureFlagsFromEnv({
+      NEXT_PUBLIC_AICREW_CREDITS_ENABLED: process.env.NEXT_PUBLIC_AICREW_CREDITS_ENABLED
+    })
+  });
+}
+
 async function fetchSystemAiConfig(fetchImpl = fetch) {
   const endpoint = `${basePath}/api/ai/generate`;
   try {
@@ -326,6 +335,9 @@ async function fetchSystemAiConfig(fetchImpl = fetch) {
     const config = normalizeSystemAiConfig({
       configured: false,
       endpoint,
+      features: publicFeatureFlagsFromEnv({
+        NEXT_PUBLIC_AICREW_CREDITS_ENABLED: process.env.NEXT_PUBLIC_AICREW_CREDITS_ENABLED
+      }),
       error: error instanceof Error ? error.message : String(error)
     });
     return { ...config, selection: loadAiSelection(config) };
@@ -348,15 +360,18 @@ function assetToMaterial(asset) {
     ref: asset?.ref || ""
   });
 }
-export function AICrewStudio({ initialView = "dashboard" }) {
+export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null }) {
   const [state, setState] = useState(null);
-  const [view, setView] = useState(initialView);
+  const [view, setView] = useState(() => {
+    const config = initialSystemAiConfig(initialAiConfig);
+    return !creditsEnabledFor(config) && initialView === "billing" ? "dashboard" : initialView;
+  });
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [selectedVariantId, setSelectedVariantId] = useState(null);
   const [editSeed, setEditSeed] = useState(null);
   const [referencedAssetIds, setReferencedAssetIds] = useState([]);
   // AI 平台配置来自 server env；浏览器只保存“选择哪个系统模型”的 id，不接收 token/baseURL。
-  const [aiConfig, setAiConfig] = useState(() => normalizeSystemAiConfig());
+  const [aiConfig, setAiConfig] = useState(() => initialSystemAiConfig(initialAiConfig));
   const [generating, setGenerating] = useState(false);
   const [retryingAgentId, setRetryingAgentId] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
