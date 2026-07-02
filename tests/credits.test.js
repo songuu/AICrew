@@ -8,6 +8,20 @@ import {
   reserveCredits,
   settleReservation
 } from "../lib/credits.js";
+import {
+  claimDailyRefresh,
+  claimSignupBonus,
+  createCreditSystemWallet,
+  createSeededCreditSystemWallet,
+  creditMembershipPlans,
+  creditTopupProducts,
+  getCreditCatalog,
+  grantCreditBucket,
+  reconcileCreditSystemWallet,
+  releaseCreditReservation,
+  reserveCreditAmount,
+  settleCreditReservation
+} from "../lib/credit-system.js";
 
 test("reserve then partial settle consumes actual amount and returns unused credits", () => {
   const wallet = createCreditWallet({ id: "wallet-1", available: 100 });
@@ -188,4 +202,104 @@ test("createCreditWallet rehydrates opening balance from settled reservations", 
 
   assert.equal(rehydrated.openingBalance, 120);
   assert.doesNotThrow(() => reconcileWallet(rehydrated));
+});
+
+test("credit catalog exposes membership plans, topups, and price rules as data", () => {
+  const catalog = getCreditCatalog();
+  assert.ok(catalog.version);
+  assert.deepEqual(catalog.membershipPlans.map(plan => plan.id), creditMembershipPlans.map(plan => plan.id));
+  assert.deepEqual(catalog.topupProducts.map(product => product.id), creditTopupProducts.map(product => product.id));
+  assert.equal(catalog.topupProducts.find(product => product.id === "topup_980").totalCredits, 1030);
+  assert.equal(catalog.membershipPlans.find(plan => plan.id === "flagship_monthly").concurrentTaskLimit, null);
+  assert.ok(catalog.priceRules.some(rule => rule.id === "agent_retry"));
+});
+
+test("signup bonus and daily refresh are bucketed and idempotent", () => {
+  const empty = createCreditSystemWallet({ id: "wallet-full-1", workspaceId: "default" });
+  const signup = claimSignupBonus(empty, { now: "2026-07-02T01:00:00.000Z" });
+  const daily = claimDailyRefresh(signup.wallet, {
+    now: "2026-07-02T02:00:00.000Z",
+    accountCreatedAt: "2026-06-30T00:00:00.000Z"
+  });
+  const repeatedDaily = claimDailyRefresh(daily.wallet, {
+    now: "2026-07-02T03:00:00.000Z",
+    accountCreatedAt: "2026-06-30T00:00:00.000Z"
+  });
+
+  assert.equal(signup.wallet.availableCredits, 70);
+  assert.equal(daily.wallet.availableCredits, 90);
+  assert.equal(daily.bucket.expiresAt, "2026-07-02T23:59:59.999Z");
+  assert.equal(repeatedDaily.idempotent, true);
+  assert.equal(repeatedDaily.wallet.availableCredits, 90);
+  assert.equal(repeatedDaily.wallet.buckets.length, 2);
+  assert.doesNotThrow(() => reconcileCreditSystemWallet(repeatedDaily.wallet));
+});
+
+test("bucket reservations spend the earliest expiring bucket first and settle partial usage", () => {
+  const seeded = createSeededCreditSystemWallet({ id: "wallet-full-2", initialCredits: 0 });
+  const daily = grantCreditBucket(seeded, {
+    amount: 20,
+    sourceType: "daily_refresh_free",
+    bucketId: "bucket-daily",
+    expiresAt: "2026-07-02T23:59:59.999Z",
+    idempotencyKey: "grant:daily",
+    createdAt: "2026-07-02T00:00:00.000Z"
+  });
+  const topup = grantCreditBucket(daily.wallet, {
+    amount: 100,
+    sourceType: "topup_purchase",
+    bucketId: "bucket-topup",
+    idempotencyKey: "grant:topup",
+    createdAt: "2026-07-02T00:01:00.000Z"
+  });
+  const reserved = reserveCreditAmount(topup.wallet, {
+    amount: 50,
+    reservationId: "reservation-full-1",
+    idempotencyKey: "reserve:full-1",
+    now: "2026-07-02T12:00:00.000Z"
+  });
+  const settled = settleCreditReservation(reserved.wallet, "reservation-full-1", {
+    actualAmount: 35,
+    now: "2026-07-02T12:01:00.000Z"
+  });
+  const dailyBucket = settled.wallet.buckets.find(bucket => bucket.id === "bucket-daily");
+  const topupBucket = settled.wallet.buckets.find(bucket => bucket.id === "bucket-topup");
+
+  assert.deepEqual(reserved.reservation.allocations.map(item => [item.bucketId, item.amountReserved]), [
+    ["bucket-daily", 20],
+    ["bucket-topup", 30]
+  ]);
+  assert.equal(settled.wallet.availableCredits, 85);
+  assert.equal(settled.wallet.reservedCredits, 0);
+  assert.equal(settled.settledAmount, 35);
+  assert.equal(settled.releasedAmount, 15);
+  assert.equal(dailyBucket.remainingAmount, 0);
+  assert.equal(topupBucket.remainingAmount, 85);
+  assert.doesNotThrow(() => reconcileCreditSystemWallet(settled.wallet));
+});
+
+test("release after source bucket expiry does not revive expired free credits", () => {
+  const granted = grantCreditBucket(createCreditSystemWallet({ id: "wallet-full-3" }), {
+    amount: 20,
+    sourceType: "daily_refresh_free",
+    bucketId: "bucket-expiring",
+    expiresAt: "2026-07-02T23:59:59.999Z",
+    idempotencyKey: "grant:expiring",
+    createdAt: "2026-07-02T00:00:00.000Z"
+  });
+  const reserved = reserveCreditAmount(granted.wallet, {
+    amount: 20,
+    reservationId: "reservation-expiring",
+    now: "2026-07-02T12:00:00.000Z"
+  });
+  const released = releaseCreditReservation(reserved.wallet, "reservation-expiring", {
+    now: "2026-07-03T00:00:00.000Z"
+  });
+
+  assert.equal(released.wallet.availableCredits, 0);
+  assert.equal(released.wallet.reservedCredits, 0);
+  assert.equal(released.expiredAmount, 20);
+  assert.equal(released.wallet.buckets[0].remainingAmount, 0);
+  assert.ok(released.wallet.transactions.some(transaction => transaction.type === "expire" && transaction.amount === -20));
+  assert.doesNotThrow(() => reconcileCreditSystemWallet(released.wallet));
 });

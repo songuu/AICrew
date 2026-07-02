@@ -1,6 +1,6 @@
 import { json, DB_UNCONFIGURED_MESSAGE, INTERNAL_ERROR_MESSAGE } from "../../../../lib/db/http.js";
 import { isDbConfigured, resolveWorkspaceId, withDbRetry } from "../../../../lib/db/client.js";
-import { applyCreditTransaction, CreditTransactionError } from "../../../../lib/db/repositories/credits.js";
+import { grantCreditEntitlement, CreditTransactionError } from "../../../../lib/db/repositories/credits.js";
 import { areCreditsEnabled } from "../../../../lib/feature-flags.js";
 
 export const dynamic = "force-dynamic";
@@ -15,16 +15,16 @@ export async function POST(request: Request) {
   } catch {
     return json({ error: "请求 JSON 无效" }, 400);
   }
-  const type = body?.type || "consume";
-  const amount = Number(body?.amount);
-  if (type !== "consume" || !Number.isFinite(amount) || amount >= 0) {
-    return json({ error: "公共交易端点只接受幂等扣费 consume 交易；发放/充值/调账需服务端受信路径。", code: "CREDIT_TRANSACTION_FORBIDDEN" }, 403);
+  const action = body?.action || body?.type || "daily_refresh";
+  if (!["daily_refresh", "signup_bonus"].includes(action)) {
+    return json({ error: "当前公共端点只允许领取免费权益；充值和后台调账需要真实支付/auth 后启用。", code: "CREDIT_GRANT_FORBIDDEN" }, 403);
   }
   try {
-    const result = await withDbRetry(() => applyCreditTransaction({ ...body, type: "consume", amount }, resolveWorkspaceId(request)));
+    const result = await withDbRetry(() => grantCreditEntitlement({ ...body, action }, resolveWorkspaceId(request)));
     return json(result);
   } catch (error) {
     if (error instanceof CreditTransactionError) return json({ error: error.message, code: error.code }, error.status);
     return json({ error: INTERNAL_ERROR_MESSAGE }, 500);
   }
 }
+

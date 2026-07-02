@@ -58,6 +58,7 @@ import { renderBrandImageHint } from "../lib/brand/prompt.js";
 import { CanvasStudio } from "./canvas/CanvasStudio.jsx";
 import { OrchestratorConsole } from "./OrchestratorConsole.jsx";
 import { publicFeatureFlagsFromEnv } from "../lib/feature-flags.js";
+import { getCreditCatalog } from "../lib/credit-system.js";
 
 const storageKey = "aicrew-studio-next-state-v1";
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/aicrew";
@@ -748,21 +749,45 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
   function mergeServerCreditTransaction(current, result) {
     const entry = result?.ledgerEntry;
     const nextCredits = Number.isFinite(result?.credits) ? result.credits : current.workspace.credits;
+    const nextReservedCredits = Number.isFinite(result?.reservedCredits) ? result.reservedCredits : current.workspace.reservedCredits || 0;
     const nextLedger = entry
       ? [entry, ...current.creditLedger.filter(item => item.id !== entry.id && !(item.reservationId === entry.reservationId && item.type === entry.type))]
       : current.creditLedger;
+    const creditWallet = result?.creditWallet || current.creditWallet || null;
     return {
       ...current,
       workspace: {
         ...current.workspace,
         credits: nextCredits,
-        reservedCredits: 0,
+        reservedCredits: nextReservedCredits,
         creditOpeningBalance: Number.isFinite(result?.openingBalance) ? result.openingBalance : current.workspace.creditOpeningBalance
       },
-      creditLedger: nextLedger
+      creditLedger: Array.isArray(result?.ledger) ? result.ledger : nextLedger,
+      creditWallet,
+      creditCatalog: creditWallet?.catalog || result?.catalog || current.creditCatalog || null
     };
   }
-
+  function claimDailyCredits() {
+    if (!creditsEnabled) return;
+    if (!serverReadyRef.current) {
+      setState(current => addNotificationToState(current, {
+        level: "warning",
+        title: "每日积分需要连接服务端钱包后领取。"
+      }));
+      return;
+    }
+    remote
+      .serializeWrite(async () => {
+        const result = await remote.grantCredits({
+          action: "daily_refresh",
+          accountCreatedAt: state.currentUser?.createdAt || state.workspace?.createdAt || state.tasks?.at(-1)?.createdAt || new Date().toISOString()
+        });
+        setState(current => current ? mergeServerCreditTransaction(current, result) : current);
+      })
+      .catch(error => {
+        setState(current => current ? addCreditFailureNoticeToState(current, "每日积分领取", error) : current);
+      });
+  }
   function syncCreditConsume({ reservationId, taskId, amount, label, reason }) {
     if (!creditsEnabled) return;
     const actualAmount = Number.isFinite(amount) ? Math.max(0, Math.trunc(amount)) : 0;
@@ -1256,7 +1281,7 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
           {view === "skills" && <Skills allSkills={allSkills} creditsEnabled={creditsEnabled} />}
           {view === "brand" && <Brand state={state} saveBrand={saveBrand} />}
           {view === "exports" && <Exports state={state} />}
-          {view === "billing" && creditsEnabled && <Billing state={state} />}
+          {view === "billing" && creditsEnabled && <Billing state={state} onClaimDailyCredits={claimDailyCredits} />}
           {view === "admin" && <Admin state={state} creditsEnabled={creditsEnabled} />}
           {view === "onboarding" && <Onboarding state={state} updateProfile={updateProfile} />}
         </section>
@@ -2191,56 +2216,178 @@ function Exports({ state }) {
   );
 }
 
-function Billing({ state }) {
+function Billing({ state, onClaimDailyCredits }) {
   const billingNotice = (state.notifications || []).find(item => item.level === "warning" && String(item.title || "").includes("credits"));
+  const creditWallet = state.creditWallet || null;
+  const catalog = creditWallet?.catalog || state.creditCatalog || getCreditCatalog();
+  const availableCredits = Number.isFinite(creditWallet?.availableCredits) ? creditWallet.availableCredits : state.workspace.credits;
+  const reservedCredits = Number.isFinite(creditWallet?.reservedCredits) ? creditWallet.reservedCredits : state.workspace.reservedCredits || 0;
+  const totalCredits = availableCredits + reservedCredits;
+  const monthlyCredits = Math.max(1, state.workspace.monthlyCredits || totalCredits || 1);
+  const creditRatio = Math.min(100, Math.round((availableCredits / monthlyCredits) * 100));
+  const buckets = Array.isArray(creditWallet?.buckets) ? creditWallet.buckets : [];
+  const receivedLedger = Array.isArray(creditWallet?.receivedLedger) ? creditWallet.receivedLedger : state.creditLedger.filter(item => item.amount > 0);
+  const usedLedger = Array.isArray(creditWallet?.usedLedger) ? creditWallet.usedLedger : state.creditLedger.filter(item => item.amount <= 0);
+  const currentPlanId = creditWallet?.planId || state.workspace.plan || "free";
+
   return (
-    <div className="page-grid two">
+    <div className="page-grid two billing-grid">
       <section className="panel billing-panel">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">Plan</p>
-            <h3>{state.workspace.plan}</h3>
+            <p className="eyebrow">Wallet</p>
+            <h3>{catalog.displayName}</h3>
           </div>
-          <span className="status-chip">
-            {state.workspace.credits} / {state.workspace.monthlyCredits}
-          </span>
+          <span className="status-chip">{availableCredits.toLocaleString()} 可用</span>
         </div>
         {billingNotice && <div className="billing-alert">{billingNotice.title}</div>}
-        <div className="credit-meter">
-          <span style={{ width: `${Math.min(100, (state.workspace.credits / state.workspace.monthlyCredits) * 100)}%` }} />
+        <div className="wallet-summary">
+          <div>
+            <span>可用</span>
+            <strong>{availableCredits.toLocaleString()}</strong>
+          </div>
+          <div>
+            <span>冻结</span>
+            <strong>{reservedCredits.toLocaleString()}</strong>
+          </div>
+          <div>
+            <span>今日到期</span>
+            <strong>{(creditWallet?.expiringTodayCredits || 0).toLocaleString()}</strong>
+          </div>
+          <div>
+            <span>永久</span>
+            <strong>{(creditWallet?.permanentCredits || availableCredits).toLocaleString()}</strong>
+          </div>
         </div>
-        <div className="pricing-grid">
-          {["Starter", "Pro", "Studio", "Business"].map(plan => (
-            <article className={`price-card ${state.workspace.plan === plan ? "active" : ""}`} key={plan}>
-              <strong>{plan}</strong>
-              <span>{plan === "Studio" ? "$99" : plan === "Business" ? "Custom" : plan === "Pro" ? "$49" : "$19"}</span>
+        <div className="credit-meter" title={`${creditRatio}%`}>
+          <span style={{ width: `${creditRatio}%` }} />
+        </div>
+        <div className="billing-actions">
+          <button type="button" className="primary-button" onClick={onClaimDailyCredits}>领取今日积分</button>
+          <span>{totalCredits.toLocaleString()} total · catalog {catalog.version}</span>
+        </div>
+        <div className="credit-bucket-list">
+          {(buckets.length ? buckets : [{ id: "legacy-balance", sourceType: "legacy", remainingAmount: availableCredits, reservedAmount: reservedCredits, expiresAt: null }]).map(bucket => (
+            <div className="credit-bucket-row" key={bucket.id}>
+              <div>
+                <strong>{bucketLabel(bucket.sourceType)}</strong>
+                <span>{bucket.expiresAt ? `有效期至 ${formatDate(bucket.expiresAt)}` : "长期有效"}</span>
+              </div>
+              <em>{bucket.remainingAmount.toLocaleString()} 可用 · {bucket.reservedAmount.toLocaleString()} 冻结</em>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel billing-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Membership</p>
+            <h3>会员权益</h3>
+          </div>
+        </div>
+        <div className="pricing-grid membership-grid">
+          {catalog.membershipPlans.map(plan => (
+            <article className={`price-card ${currentPlanId === plan.id || state.workspace.plan === plan.name ? "active" : ""}`} key={plan.id}>
+              <strong>{plan.name}</strong>
+              <span>{plan.priceCny ? `¥${plan.priceCny}/月` : "免费"}</span>
+              <small>月赠 {plan.monthlyGrant.toLocaleString()} · 每日 {plan.dailyRefreshAfterWeek}</small>
+              <small>并发 {plan.concurrentTaskLimit == null ? "不限" : `${plan.concurrentTaskLimit} 个任务`}</small>
             </article>
           ))}
         </div>
       </section>
-      <section className="panel">
+
+      <section className="panel billing-panel">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">Ledger</p>
-            <h3>积分流水</h3>
+            <p className="eyebrow">Top up</p>
+            <h3>单购积分包</h3>
           </div>
         </div>
-        <div className="ledger-list">
-          {state.creditLedger.map(item => (
-            <div className="ledger-row" key={item.id}>
-              <span>{item.label}</span>
-              <strong className={item.amount > 0 ? "positive" : "negative"}>
-                {item.amount > 0 ? "+" : ""}
-                {item.amount}
-              </strong>
+        <div className="pricing-grid topup-grid">
+          {catalog.topupProducts.map(product => (
+            <article className="price-card" key={product.id}>
+              <strong>{product.totalCredits.toLocaleString()}</strong>
+              <span>¥{product.priceCny}</span>
+              <small>{product.bonusCredits ? `含赠送 +${product.bonusCredits}` : product.name}</small>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel billing-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Pricing</p>
+            <h3>功能价格目录</h3>
+          </div>
+        </div>
+        <div className="credit-rule-list">
+          {catalog.priceRules.map(rule => (
+            <div className="credit-rule-row" key={rule.id}>
+              <span>{rule.category}</span>
+              <strong>{rule.baseCredits} / {rule.unit}</strong>
+              <em>高级 {rule.highPatternCredits}</em>
             </div>
           ))}
         </div>
+      </section>
+
+      <section className="panel billing-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Received</p>
+            <h3>收入流水</h3>
+          </div>
+        </div>
+        <LedgerList entries={receivedLedger} empty="暂无收入流水" />
+      </section>
+
+      <section className="panel billing-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Used</p>
+            <h3>支出流水</h3>
+          </div>
+        </div>
+        <LedgerList entries={usedLedger} empty="暂无支出流水" />
       </section>
     </div>
   );
 }
 
+function LedgerList({ entries, empty }) {
+  return (
+    <div className="ledger-list">
+      {entries.length === 0 && <div className="ledger-empty">{empty}</div>}
+      {entries.map(item => (
+        <div className="ledger-row" key={item.id}>
+          <span>{item.label || item.type}</span>
+          <strong className={item.amount > 0 ? "positive" : item.amount < 0 ? "negative" : ""}>
+            {item.amount > 0 ? "+" : ""}
+            {item.amount}
+          </strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function bucketLabel(sourceType) {
+  const labels = {
+    signup_bonus: "首次赠送",
+    daily_refresh_free: "每日免费",
+    daily_refresh_membership: "会员每日",
+    membership_grant: "会员月赠",
+    topup_purchase: "单购积分",
+    redeem_code: "兑换码",
+    admin_adjustment: "后台调整",
+    grant: "系统发放",
+    legacy: "历史余额"
+  };
+  return labels[sourceType] || sourceType;
+}
 function Admin({ state, creditsEnabled = true }) {
   return (
     <div className="page-grid two">

@@ -1,6 +1,6 @@
 import { json, DB_UNCONFIGURED_MESSAGE, INTERNAL_ERROR_MESSAGE } from "../../../../lib/db/http.js";
 import { isDbConfigured, resolveWorkspaceId, withDbRetry } from "../../../../lib/db/client.js";
-import { applyCreditTransaction, CreditTransactionError } from "../../../../lib/db/repositories/credits.js";
+import { releaseServerCredits, CreditTransactionError } from "../../../../lib/db/repositories/credits.js";
 import { areCreditsEnabled } from "../../../../lib/feature-flags.js";
 
 export const dynamic = "force-dynamic";
@@ -15,13 +15,8 @@ export async function POST(request: Request) {
   } catch {
     return json({ error: "请求 JSON 无效" }, 400);
   }
-  const type = body?.type || "consume";
-  const amount = Number(body?.amount);
-  if (type !== "consume" || !Number.isFinite(amount) || amount >= 0) {
-    return json({ error: "公共交易端点只接受幂等扣费 consume 交易；发放/充值/调账需服务端受信路径。", code: "CREDIT_TRANSACTION_FORBIDDEN" }, 403);
-  }
   try {
-    const result = await withDbRetry(() => applyCreditTransaction({ ...body, type: "consume", amount }, resolveWorkspaceId(request)));
+    const result = await withDbRetry(() => releaseServerCredits(body, resolveWorkspaceId(request)));
     return json(result);
   } catch (error) {
     if (error instanceof CreditTransactionError) return json({ error: error.message, code: error.code }, error.status);

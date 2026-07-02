@@ -2227,6 +2227,105 @@ button {
   color: var(--coral);
 }
 
+
+.billing-grid {
+  align-items: start;
+}
+
+.wallet-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.wallet-summary div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.wallet-summary span,
+.billing-actions span,
+.credit-bucket-row span,
+.price-card small,
+.credit-rule-row em,
+.ledger-empty {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.wallet-summary strong {
+  font-family: var(--mono);
+  font-size: 18px;
+}
+
+.billing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.credit-bucket-list,
+.credit-rule-list {
+  display: grid;
+  gap: 8px;
+}
+
+.credit-bucket-row,
+.credit-rule-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.credit-bucket-row div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.credit-bucket-row em,
+.credit-rule-row strong {
+  font-family: var(--mono);
+  color: var(--text);
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.membership-grid,
+.topup-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.credit-rule-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.ledger-empty {
+  padding: 12px 0;
+}
+
+@media (max-width: 720px) {
+  .wallet-summary,
+  .membership-grid,
+  .topup-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .credit-rule-row,
+  .credit-bucket-row {
+    grid-template-columns: 1fr;
+  }
+}
 /* ---------- admin / model router ---------- */
 .model-row {
   display: grid;
