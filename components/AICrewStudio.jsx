@@ -58,7 +58,7 @@ import { renderBrandImageHint } from "../lib/brand/prompt.js";
 import { CanvasStudio } from "./canvas/CanvasStudio.jsx";
 import { OrchestratorConsole } from "./OrchestratorConsole.jsx";
 import { publicFeatureFlagsFromEnv } from "../lib/feature-flags.js";
-import { getCreditCatalog } from "../lib/credit-system.js";
+import { getCreditCatalog, getDailyCheckInState } from "../lib/credit-system.js";
 
 const storageKey = "aicrew-studio-next-state-v1";
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/aicrew";
@@ -422,6 +422,7 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
   const [retryingAgentId, setRetryingAgentId] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [workbenchMode, setWorkbenchMode] = useState("auto");
+  const [dailyCheckInPending, setDailyCheckInPending] = useState(false);
   // 服务端可达门：仅当挂载时成功读到 server（snapshot 与 assets 均可达）才允许后续破坏性 replace-all 写，
   // 否则一旦 server 临时不可达就回退本地态、跳过云写，杜绝用空/降级态整覆写清空云端权威数据（评审 D 项）。
   const serverReadyRef = useRef(false);
@@ -557,6 +558,24 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
   useEffect(() => {
     if (!creditsEnabled && view === "billing") navigate("dashboard");
   }, [creditsEnabled, view]);
+
+  useEffect(() => {
+    if (!state || !creditsEnabled || view !== "billing") return undefined;
+    let alive = true;
+    remote
+      .fetchCreditWallet()
+      .then(result => {
+        if (!alive || result?.disabled) return;
+        setState(current => current ? mergeServerCreditTransaction(current, result) : current);
+      })
+      .catch(error => {
+        if (!alive) return;
+        setState(current => current ? addCreditFailureNoticeToState(current, "签到钱包同步", error) : current);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [creditsEnabled, view, state?.workspace?.id]);
 
   useEffect(() => {
     if (!task) return;
@@ -768,25 +787,29 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
     };
   }
   function claimDailyCredits() {
-    if (!creditsEnabled) return;
-    if (!serverReadyRef.current) {
-      setState(current => addNotificationToState(current, {
-        level: "warning",
-        title: "每日积分需要连接服务端钱包后领取。"
-      }));
-      return;
-    }
+    if (!creditsEnabled || dailyCheckInPending) return;
+    setDailyCheckInPending(true);
     remote
       .serializeWrite(async () => {
         const result = await remote.grantCredits({
           action: "daily_refresh",
           accountCreatedAt: state.currentUser?.createdAt || state.workspace?.createdAt || state.tasks?.at(-1)?.createdAt || new Date().toISOString()
         });
-        setState(current => current ? mergeServerCreditTransaction(current, result) : current);
+        if (result?.disabled) throw new Error("积分功能未启用。");
+        setState(current => {
+          if (!current) return current;
+          const next = mergeServerCreditTransaction(current, result);
+          const amount = result?.creditWallet?.dailyCheckIn?.amount;
+          const title = result?.idempotent
+            ? "今日已签到，积分不会重复发放。"
+            : `签到成功，已领取 ${Number.isFinite(amount) ? amount.toLocaleString() : "今日"} 积分。`;
+          return addNotificationToState(next, { level: "success", title });
+        });
       })
       .catch(error => {
-        setState(current => current ? addCreditFailureNoticeToState(current, "每日积分领取", error) : current);
-      });
+        setState(current => current ? addCreditFailureNoticeToState(current, "每日签到", error) : current);
+      })
+      .finally(() => setDailyCheckInPending(false));
   }
   function syncCreditConsume({ reservationId, taskId, amount, label, reason }) {
     if (!creditsEnabled) return;
@@ -1281,7 +1304,7 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
           {view === "skills" && <Skills allSkills={allSkills} creditsEnabled={creditsEnabled} />}
           {view === "brand" && <Brand state={state} saveBrand={saveBrand} />}
           {view === "exports" && <Exports state={state} />}
-          {view === "billing" && creditsEnabled && <Billing state={state} onClaimDailyCredits={claimDailyCredits} />}
+          {view === "billing" && creditsEnabled && <Billing state={state} onClaimDailyCredits={claimDailyCredits} dailyCheckInPending={dailyCheckInPending} />}
           {view === "admin" && <Admin state={state} creditsEnabled={creditsEnabled} />}
           {view === "onboarding" && <Onboarding state={state} updateProfile={updateProfile} />}
         </section>
@@ -2216,8 +2239,8 @@ function Exports({ state }) {
   );
 }
 
-function Billing({ state, onClaimDailyCredits }) {
-  const billingNotice = (state.notifications || []).find(item => item.level === "warning" && String(item.title || "").includes("credits"));
+function Billing({ state, onClaimDailyCredits, dailyCheckInPending = false }) {
+  const billingNotice = (state.notifications || []).find(item => ["warning", "success"].includes(item.level) && /credits|积分|签到/i.test(String(item.title || "")));
   const creditWallet = state.creditWallet || null;
   const catalog = creditWallet?.catalog || state.creditCatalog || getCreditCatalog();
   const availableCredits = Number.isFinite(creditWallet?.availableCredits) ? creditWallet.availableCredits : state.workspace.credits;
@@ -2229,6 +2252,22 @@ function Billing({ state, onClaimDailyCredits }) {
   const receivedLedger = Array.isArray(creditWallet?.receivedLedger) ? creditWallet.receivedLedger : state.creditLedger.filter(item => item.amount > 0);
   const usedLedger = Array.isArray(creditWallet?.usedLedger) ? creditWallet.usedLedger : state.creditLedger.filter(item => item.amount <= 0);
   const currentPlanId = creditWallet?.planId || state.workspace.plan || "free";
+  const accountCreatedAt = state.currentUser?.createdAt || state.workspace?.createdAt || state.tasks?.at(-1)?.createdAt || new Date().toISOString();
+  const dailyCheckIn = creditWallet?.dailyCheckIn || getDailyCheckInState({
+    ...(creditWallet || {}),
+    id: creditWallet?.walletId,
+    workspaceId: creditWallet?.workspaceId || state.workspace?.id,
+    planId: currentPlanId,
+    availableCredits,
+    reservedCredits,
+    transactions: creditWallet?.transactions || []
+  }, { accountCreatedAt });
+  const checkedInToday = dailyCheckIn?.checkedIn === true;
+  const checkInAmount = Number.isFinite(dailyCheckIn?.amount) ? dailyCheckIn.amount : 0;
+  const checkInDisabled = dailyCheckInPending || checkedInToday || checkInAmount <= 0;
+  const checkInMeta = checkedInToday
+    ? `已于 ${dailyCheckIn.checkedAt ? formatDate(dailyCheckIn.checkedAt) : dailyCheckIn.day} 签到`
+    : `${dailyCheckIn?.expiresAt ? `有效期至 ${formatDate(dailyCheckIn.expiresAt)}` : "今日有效"}`;
 
   return (
     <div className="page-grid two billing-grid">
@@ -2240,7 +2279,7 @@ function Billing({ state, onClaimDailyCredits }) {
           </div>
           <span className="status-chip">{availableCredits.toLocaleString()} 可用</span>
         </div>
-        {billingNotice && <div className="billing-alert">{billingNotice.title}</div>}
+        {billingNotice && <div className={`billing-alert ${billingNotice.level}`}>{billingNotice.title}</div>}
         <div className="wallet-summary">
           <div>
             <span>可用</span>
@@ -2262,8 +2301,26 @@ function Billing({ state, onClaimDailyCredits }) {
         <div className="credit-meter" title={`${creditRatio}%`}>
           <span style={{ width: `${creditRatio}%` }} />
         </div>
+        <div className={`daily-checkin-form ${checkedInToday ? "checked" : ""}`}>
+          <div className="daily-checkin-badge">
+            <span>今日签到</span>
+            <strong>+{checkInAmount.toLocaleString()}</strong>
+          </div>
+          <div className="daily-checkin-copy">
+            <strong>{checkedInToday ? "今日已签到" : "签到领积分"}</strong>
+            <span>{checkInMeta}</span>
+          </div>
+          <button
+            type="button"
+            className="primary-button"
+            onClick={onClaimDailyCredits}
+            disabled={checkInDisabled}
+            aria-label={checkedInToday ? "今日已签到" : "签到领取今日积分"}
+          >
+            {dailyCheckInPending ? "签到中" : checkedInToday ? "已签到" : "立即签到"}
+          </button>
+        </div>
         <div className="billing-actions">
-          <button type="button" className="primary-button" onClick={onClaimDailyCredits}>领取今日积分</button>
           <span>{totalCredits.toLocaleString()} total · catalog {catalog.version}</span>
         </div>
         <div className="credit-bucket-list">

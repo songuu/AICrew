@@ -9,6 +9,7 @@ import {
   settleReservation
 } from "../lib/credits.js";
 import {
+  buildCreditWalletOverview,
   claimDailyRefresh,
   claimSignupBonus,
   createCreditSystemWallet,
@@ -16,6 +17,7 @@ import {
   creditMembershipPlans,
   creditTopupProducts,
   getCreditCatalog,
+  getDailyCheckInState,
   grantCreditBucket,
   reconcileCreditSystemWallet,
   releaseCreditReservation,
@@ -233,6 +235,47 @@ test("signup bonus and daily refresh are bucketed and idempotent", () => {
   assert.equal(repeatedDaily.wallet.availableCredits, 90);
   assert.equal(repeatedDaily.wallet.buckets.length, 2);
   assert.doesNotThrow(() => reconcileCreditSystemWallet(repeatedDaily.wallet));
+});
+
+test("daily check-in state reflects today's signed-in status", () => {
+  const empty = createCreditSystemWallet({
+    walletId: "wallet-checkin-1",
+    workspaceId: "default",
+    createdAt: "2026-06-30T00:00:00.000Z"
+  });
+  const before = getDailyCheckInState(empty, {
+    now: "2026-07-02T01:00:00.000Z",
+    accountCreatedAt: "2026-06-30T00:00:00.000Z"
+  });
+  const claimed = claimDailyRefresh(empty, {
+    now: "2026-07-02T02:00:00.000Z",
+    accountCreatedAt: "2026-06-30T00:00:00.000Z"
+  });
+  const after = getDailyCheckInState(claimed.wallet, {
+    now: "2026-07-02T03:00:00.000Z",
+    accountCreatedAt: "2026-06-30T00:00:00.000Z"
+  });
+  const overview = buildCreditWalletOverview(claimed.wallet, {
+    now: "2026-07-02T04:00:00.000Z",
+    accountCreatedAt: "2026-06-30T00:00:00.000Z"
+  });
+  const nextDay = getDailyCheckInState(claimed.wallet, {
+    now: "2026-07-03T01:00:00.000Z",
+    accountCreatedAt: "2026-06-30T00:00:00.000Z"
+  });
+
+  assert.equal(before.checkedIn, false);
+  assert.equal(before.amount, 20);
+  assert.equal(before.expiresAt, "2026-07-02T23:59:59.999Z");
+  assert.equal(claimed.wallet.availableCredits, 20);
+  assert.equal(after.checkedIn, true);
+  assert.equal(after.transactionId, claimed.transaction.id);
+  assert.equal(after.remainingTodayCredits, 20);
+  assert.equal(overview.dailyCheckIn.checkedIn, true);
+  assert.equal(overview.dailyCheckIn.transactionId, claimed.transaction.id);
+  assert.equal(nextDay.checkedIn, false);
+  assert.equal(nextDay.day, "2026-07-03");
+  assert.doesNotThrow(() => reconcileCreditSystemWallet(claimed.wallet));
 });
 
 test("bucket reservations spend the earliest expiring bucket first and settle partial usage", () => {

@@ -503,6 +503,14 @@ button {
   box-shadow: 0 14px 38px rgba(124, 92, 255, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.5);
 }
 
+.primary-button:disabled {
+  cursor: not-allowed;
+  color: rgba(255, 255, 255, 0.66);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: none;
+  transform: none;
+}
+
 .icon-button {
   width: 42px;
   padding: 0;
@@ -2191,6 +2199,15 @@ button {
   line-height: 1.45;
 }
 
+.billing-alert.success {
+  border-color: rgba(155, 248, 112, 0.32);
+  background: rgba(155, 248, 112, 0.1);
+}
+
+.billing-alert.warning {
+  border-color: rgba(255, 200, 87, 0.35);
+  background: rgba(255, 200, 87, 0.12);
+}
 .price-card {
   display: grid;
   gap: 12px;
@@ -2271,6 +2288,55 @@ button {
   gap: 10px;
 }
 
+.daily-checkin-form {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 14px;
+  border: 1px solid rgba(92, 225, 255, 0.22);
+  border-radius: 8px;
+  background: linear-gradient(100deg, rgba(92, 225, 255, 0.09), rgba(255, 255, 255, 0.035));
+}
+
+.daily-checkin-form.checked {
+  border-color: rgba(155, 248, 112, 0.24);
+  background: linear-gradient(100deg, rgba(155, 248, 112, 0.08), rgba(255, 255, 255, 0.03));
+}
+
+.daily-checkin-badge,
+.daily-checkin-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.daily-checkin-badge {
+  min-width: 92px;
+}
+
+.daily-checkin-badge span,
+.daily-checkin-copy span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.daily-checkin-badge strong {
+  color: var(--mint);
+  font-family: var(--mono);
+  font-size: 22px;
+}
+
+.daily-checkin-copy strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.daily-checkin-form.checked .daily-checkin-copy strong {
+  color: var(--mint);
+}
+
 .credit-bucket-list,
 .credit-rule-list {
   display: grid;
@@ -2321,6 +2387,7 @@ button {
     grid-template-columns: 1fr;
   }
 
+  .daily-checkin-form,
   .credit-rule-row,
   .credit-bucket-row {
     grid-template-columns: 1fr;
