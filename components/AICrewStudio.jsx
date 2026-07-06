@@ -21,6 +21,7 @@ import {
   retryAgentStep,
   runCreativeWorkflow,
   reserveTaskCreditsInState,
+  releaseTaskCreditsIfReservedInState,
   settleTaskCreditsInState,
   saveSkillFromProject,
   setTaskLocked,
@@ -425,6 +426,7 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
   const [dailyCheckInPending, setDailyCheckInPending] = useState(false);
   // 服务端可达门：仅当挂载时成功读到 server（snapshot 与 assets 均可达）才允许后续破坏性 replace-all 写，
   // 否则一旦 server 临时不可达就回退本地态、跳过云写，杜绝用空/降级态整覆写清空云端权威数据（评审 D 项）。
+  const stateRef = useRef(null);
   const serverReadyRef = useRef(false);
   const generatingRef = useRef(false);
   const retryingAgentRef = useRef(null);
@@ -501,6 +503,7 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
       if (!alive) return;
       // 启动调和：被 reload 打断的孤儿 running/queued task → failed-interrupted，避免永久卡「运行中」。
       const nextState = reconcileInterruptedTasks(normalizeStateShape({ ...baseState, brandKit }));
+      stateRef.current = nextState;
       setState(nextState);
       setSelectedTaskId(nextState.tasks?.[0]?.id || null);
       setSelectedVariantId(nextState.tasks?.[0]?.variants?.[0]?.id || null);
@@ -554,6 +557,24 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
     return state.assets.filter(asset => ids.has(asset.id)).map(assetToMaterial);
   }, [state, referencedAssetIds]);
   const activeVariant = task?.variants.find(item => item.id === selectedVariantId) || task?.variants?.[0];
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  function commitState(nextState) {
+    stateRef.current = nextState;
+    setState(nextState);
+    return nextState;
+  }
+
+  function updateState(updater) {
+    const baseState = stateRef.current || state;
+    const nextState = typeof updater === "function" ? updater(baseState) : updater;
+    stateRef.current = nextState;
+    setState(nextState);
+    return nextState;
+  }
 
   useEffect(() => {
     if (!creditsEnabled && view === "billing") navigate("dashboard");
@@ -712,9 +733,10 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
   function ensureCreditsBeforeRun(amount, label) {
     if (!creditsEnabled) return true;
     const required = Number.isFinite(amount) ? Math.max(0, Math.trunc(amount)) : 0;
-    const available = Number.isFinite(state.workspace?.credits) ? Math.max(0, Math.trunc(state.workspace.credits)) : 0;
+    const currentState = stateRef.current || state;
+    const available = Number.isFinite(currentState?.workspace?.credits) ? Math.max(0, Math.trunc(currentState.workspace.credits)) : 0;
     if (required <= 0 || available >= required) return true;
-    setState(current => addNotificationToState(current, {
+    updateState(current => addNotificationToState(current, {
       level: "warning",
       title: label + " 需要 " + required + " credits，当前可用 " + available + "，差额 " + (required - available) + "。"
     }));
@@ -733,16 +755,17 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
   function reserveRunCredits(reservationId, reserveAmount, label, reason) {
     if (!creditsEnabled) return true;
     try {
-      const nextState = reserveTaskCreditsInState(state, reservationTask(reservationId, reserveAmount), {
+      const currentState = stateRef.current || state;
+      const nextState = reserveTaskCreditsInState(currentState, reservationTask(reservationId, reserveAmount), {
         reservationId,
         reserveAmount,
         label,
         reason
       });
-      setState(nextState);
+      commitState(nextState);
       return true;
     } catch (error) {
-      setState(current => addCreditFailureNoticeToState(current, label, error));
+      updateState(current => addCreditFailureNoticeToState(current, label, error));
       navigate("billing");
       return false;
     }
@@ -750,13 +773,11 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
 
   function releaseRunCredits(reservationId, reserveAmount, label, reason) {
     if (!creditsEnabled) return;
-    setState(current => {
+    updateState(current => {
       try {
-        return settleTaskCreditsInState(current, reservationTask(reservationId, reserveAmount, "failed"), {
+        return releaseTaskCreditsIfReservedInState(current, reservationTask(reservationId, reserveAmount, "failed"), {
           reservationId,
           reserveAmount,
-          actualAmount: 0,
-          release: true,
           label,
           reason
         });
@@ -888,7 +909,7 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
   function commitGeneratedTask(nextTask, projectName, creditLabel, creditOptions = {}) {
     const reservationId = creditOptions.reservationId || nextTask.id + ":generation";
     const reserveAmount = creditOptions.reserveAmount || nextTask.credits?.estimated || nextTask.credits?.actual || 0;
-    setState(current => {
+    updateState(current => {
       const nextProject = createProjectFromTask(nextTask, projectName);
       const nextState = {
         ...current,
@@ -930,22 +951,25 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
           title: nextTask.brief.productName + " 内容包已生成" + (nextTask.aiMeta?.used ? "（" + nextTask.aiMeta.provider + " AI）" : "")
         });
       } catch (error) {
-        const released = settleTaskCreditsInState(current, reservationTask(reservationId, reserveAmount, "failed"), {
-          label: creditLabel + " reservation released",
-          reservationId,
-          reserveAmount,
-          actualAmount: 0,
-          release: true,
-          reason: creditOptions.reason || "generation"
-        });
-        return addCreditFailureNoticeToState(released, creditLabel, error);
+        let recovered = nextState;
+        let reportedError = error;
+        try {
+          recovered = releaseTaskCreditsIfReservedInState(nextState, reservationTask(reservationId, reserveAmount, "failed"), {
+            label: creditLabel + " reservation released",
+            reservationId,
+            reserveAmount,
+            reason: creditOptions.reason || "generation"
+          });
+        } catch (releaseError) {
+          reportedError = new Error((error instanceof Error ? error.message : String(error)) + "; release failed: " + (releaseError instanceof Error ? releaseError.message : String(releaseError)));
+        }
+        return addCreditFailureNoticeToState(recovered, creditLabel, reportedError);
       }
     });
     setSelectedTaskId(nextTask.id);
     setSelectedVariantId(nextTask.variants[0]?.id || null);
     navigate("workbench");
   }
-
   // 已配置 AI → 走真实 LLM（+OpenAI 封面图）；否则回退确定性模拟。
   // 先建立 active reservation，AI/模拟完成后只 settle/release 这条 reservation。
   async function runAndCommit(brief, skillId, projectName, creditLabel) {
@@ -967,7 +991,7 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
       });
     } catch (error) {
       releaseRunCredits(reservationId, quote.estimated, creditLabel, "generation");
-      setState(current => (creditsEnabled ? addCreditFailureNoticeToState(current, creditLabel, error) : addRunFailureNoticeToState(current, creditLabel, error)));
+      updateState(current => (creditsEnabled ? addCreditFailureNoticeToState(current, creditLabel, error) : addRunFailureNoticeToState(current, creditLabel, error)));
     } finally {
       generatingRef.current = false;
       setGenerating(false);
@@ -979,7 +1003,7 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
   function ingestBriefMaterials(brief) {
     const materials = Array.isArray(brief?.materials) ? brief.materials : [];
     if (!materials.length) return;
-    setState(current => {
+    updateState(current => {
       const existing = new Set(current.assets.map(asset => asset.name));
       const fresh = materials
         .filter(material => material.name && !existing.has(material.name))
@@ -988,7 +1012,6 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
       return { ...current, assets: [...fresh, ...current.assets] };
     });
   }
-
   // Flow 编排执行：三模式控制台统一入口。与 runAndCommit 同样的 AI/模拟兜底与提交逻辑，
   // 区别仅在用 Flow 编排图（runFlow）而非预设 skillId 驱动管线。
   async function runFlowAndCommit(brief, flow, meta) {
@@ -1014,7 +1037,7 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
       );
     } catch (error) {
       releaseRunCredits(reservationId, quote.estimated, creditLabel, "flow");
-      setState(current => (creditsEnabled ? addCreditFailureNoticeToState(current, creditLabel, error) : addRunFailureNoticeToState(current, creditLabel, error)));
+      updateState(current => (creditsEnabled ? addCreditFailureNoticeToState(current, creditLabel, error) : addRunFailureNoticeToState(current, creditLabel, error)));
     } finally {
       generatingRef.current = false;
       setGenerating(false);
@@ -1090,7 +1113,7 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
     }
     try {
       const { task: nextTask, cost } = retryAgentStep(task, agentId);
-      setState(current => {
+      updateState(current => {
         const nextTasks = current.tasks.map(item => (item.id === task.id ? nextTask : item));
         const nextProjects = current.projects.map(item =>
           item.taskId === task.id
@@ -1134,7 +1157,7 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
       });
     } catch (error) {
       releaseRunCredits(reservationId, retryCost, "Agent retry: " + agentId, "retry");
-      setState(current => (creditsEnabled ? addCreditFailureNoticeToState(current, "Agent retry: " + agentId, error) : addRunFailureNoticeToState(current, "Agent retry: " + agentId, error)));
+      updateState(current => (creditsEnabled ? addCreditFailureNoticeToState(current, "Agent retry: " + agentId, error) : addRunFailureNoticeToState(current, "Agent retry: " + agentId, error)));
     } finally {
       setTimeout(() => {
         retryingAgentRef.current = null;

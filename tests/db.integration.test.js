@@ -46,7 +46,7 @@ test("Supabase 数据层往返", { skip: hasDb ? false : "SUPABASE_DB_URL 未配
     const loaded = await loadStateSnapshot(workspaceId);
 
     assert.equal(loaded.workspace.name, "测试工作区");
-    assert.equal(loaded.workspace.credits, 5000, "客户端 credits 不应覆盖服务端余额");
+    assert.equal(loaded.workspace.credits, 10000, "客户端 credits 不应覆盖服务端余额");
     assert.equal(loaded.workspace.plan, "pro", "workspace.payload 兜底字段应保留");
     assert.equal(loaded.tasks.length, 2);
     assert.equal(loaded.tasks[0].id, "t-1");
@@ -84,13 +84,13 @@ test("Supabase 数据层往返", { skip: hasDb ? false : "SUPABASE_DB_URL 未配
       reservationId: "reservation-1",
       taskId: "task-1"
     }, workspaceId);
-    assert.equal(first.credits, 4963);
-    assert.equal(repeated.credits, 4963);
+    assert.equal(first.credits, 9963);
+    assert.equal(repeated.credits, 9963);
     assert.equal(repeated.idempotent, true);
 
     await saveStateSnapshot({ workspace: { credits: 9999 }, tasks: [], projects: [], exports: [], creditLedger: [{ id: "fake", amount: 9999 }], customSkills: [] }, workspaceId);
     const loaded = await loadStateSnapshot(workspaceId);
-    assert.equal(loaded.workspace.credits, 4963, "snapshot PUT 不应回滚服务端余额");
+    assert.equal(loaded.workspace.credits, 9963, "snapshot PUT 不应回滚服务端余额");
     assert.equal(loaded.creditLedger.some(entry => entry.id === "txn-1"), true, "snapshot PUT 不应删除服务端账本");
     assert.equal(loaded.creditLedger.some(entry => entry.id === "fake"), false, "客户端伪造账本不应写入");
   });

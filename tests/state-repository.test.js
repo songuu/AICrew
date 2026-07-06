@@ -32,8 +32,8 @@ test("sanitizeClientStateForSave treats credit fields as server-owned", () => {
 
 test("sanitizeClientStateForSave defaults new workspaces to the server grant", () => {
   const sanitized = sanitizeClientStateForSave({ workspace: { credits: 1 }, creditLedger: [{ id: "fake" }] });
-  assert.equal(sanitized.workspace.credits, 5000);
+  assert.equal(sanitized.workspace.credits, 10000);
   assert.equal(sanitized.workspace.reservedCredits, 0);
-  assert.equal(sanitized.workspace.creditOpeningBalance, 5000);
+  assert.equal(sanitized.workspace.creditOpeningBalance, 10000);
   assert.deepEqual(sanitized.creditLedger, []);
 });

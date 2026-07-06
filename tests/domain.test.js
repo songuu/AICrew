@@ -37,7 +37,9 @@ import {
   runCreativeWorkflow,
   saveSkillFromProject,
   setTaskLocked,
+  hasTaskCreditReservation,
   reserveTaskCreditsInState,
+  releaseTaskCreditsIfReservedInState,
   settleTaskCreditsInState,
   skills,
   skillGroups,
@@ -1006,7 +1008,7 @@ test("normalizes legacy snapshots before UI render", () => {
   });
 
   assert.equal(state.workspace.credits, 120);
-  assert.equal(state.workspace.monthlyCredits, 5000);
+  assert.equal(state.workspace.monthlyCredits, 10000);
   assert.equal(state.brandKit.name, "Legacy Brand");
   assert.ok(Array.isArray(state.tasks));
   assert.ok(Array.isArray(state.projects));
@@ -1088,6 +1090,45 @@ test("settleTaskCreditsInState rejects settlement without an active reservation"
   );
 });
 
+test("releaseTaskCreditsIfReservedInState no-ops when a run fails before reservation is visible", () => {
+  const state = normalizeStateShape({
+    workspace: { credits: 120, monthlyCredits: 5000 },
+    creditLedger: []
+  });
+  const task = { id: "task-no-visible-reserve", status: "failed", credits: { estimated: 50, actual: 0 } };
+
+  const next = releaseTaskCreditsIfReservedInState(state, task, {
+    reservationId: "missing-reservation",
+    reserveAmount: 50,
+    reason: "flow"
+  });
+
+  assert.equal(next, state);
+  assert.equal(hasTaskCreditReservation(next, task, { reservationId: "missing-reservation" }), false);
+});
+
+test("releaseTaskCreditsIfReservedInState releases an active run reservation", () => {
+  const state = normalizeStateShape({
+    workspace: { credits: 120, monthlyCredits: 5000 },
+    creditLedger: []
+  });
+  const task = { id: "task-release-visible-reserve", status: "running", credits: { estimated: 50, actual: 0 } };
+  const reserved = reserveTaskCreditsInState(state, task, {
+    reservationId: "reservation-release-visible",
+    reserveAmount: 50,
+    reason: "flow"
+  });
+
+  const released = releaseTaskCreditsIfReservedInState(reserved, task, {
+    reservationId: "reservation-release-visible",
+    reserveAmount: 50,
+    reason: "flow"
+  });
+
+  assert.equal(released.workspace.credits, 120);
+  assert.equal(released.workspace.reservedCredits, 0);
+  assert.equal(released.creditReservations[0].status, "released");
+});
 test("removes an asset from state without touching the original", () => {
   const state = createInitialState();
   const removedId = state.assets[0].id;

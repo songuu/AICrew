@@ -14,6 +14,7 @@ import {
   claimSignupBonus,
   createCreditSystemWallet,
   createSeededCreditSystemWallet,
+  ensureCreditSystemDefaultGrant,
   creditMembershipPlans,
   creditTopupProducts,
   getCreditCatalog,
@@ -204,6 +205,28 @@ test("createCreditWallet rehydrates opening balance from settled reservations", 
 
   assert.equal(rehydrated.openingBalance, 120);
   assert.doesNotThrow(() => reconcileWallet(rehydrated));
+});
+
+test("default testing credit grant tops existing wallets up to 10000 once", () => {
+  const oldDefaultWallet = createSeededCreditSystemWallet({
+    id: "wallet-default-upgrade",
+    initialCredits: 5000,
+    idempotencyKey: "grant:old-default"
+  });
+  const upgraded = ensureCreditSystemDefaultGrant(oldDefaultWallet, {
+    targetCredits: 10000,
+    idempotencyKey: "grant:wallet-default-upgrade:testing-default:10000"
+  });
+  const repeated = ensureCreditSystemDefaultGrant(upgraded, {
+    targetCredits: 10000,
+    idempotencyKey: "grant:wallet-default-upgrade:testing-default:10000"
+  });
+
+  assert.equal(oldDefaultWallet.availableCredits, 5000);
+  assert.equal(upgraded.availableCredits, 10000);
+  assert.equal(repeated.availableCredits, 10000);
+  assert.equal(repeated.transactions.filter(transaction => transaction.idempotencyKey === "grant:wallet-default-upgrade:testing-default:10000").length, 1);
+  assert.doesNotThrow(() => reconcileCreditSystemWallet(repeated));
 });
 
 test("credit catalog exposes membership plans, topups, and price rules as data", () => {
