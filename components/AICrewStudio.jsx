@@ -55,6 +55,7 @@ import { assembleExportBundle } from "../lib/export/bundle.js";
 import { stripArtifactsForStorage } from "../lib/artifacts.js";
 import { loadBrandKit, saveBrandKit, normalizeBrandKit } from "../lib/brand/store.js";
 import * as remote from "../lib/storage/remote.js";
+import { buildRuntimeApiPath, buildRuntimePath } from "../lib/runtime/base-path.js";
 import { renderBrandImageHint } from "../lib/brand/prompt.js";
 import { CanvasStudio } from "./canvas/CanvasStudio.jsx";
 import { OrchestratorConsole } from "./OrchestratorConsole.jsx";
@@ -62,7 +63,6 @@ import { publicFeatureFlagsFromEnv } from "../lib/feature-flags.js";
 import { getCreditCatalog, getDailyCheckInState } from "../lib/credit-system.js";
 
 const storageKey = "aicrew-studio-next-state-v1";
-const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/aicrew";
 
 const navItems = [
   ["dashboard", "Dashboard", "◎"],
@@ -108,7 +108,7 @@ const routeTitles = {
 };
 
 function hrefFor(view) {
-  return view === "dashboard" ? `${basePath}/` : `${basePath}/${view}/`;
+  return buildRuntimePath(view === "dashboard" ? "/" : `/${view}/`);
 }
 
 function formatDate(value) {
@@ -372,9 +372,9 @@ function initialSystemAiConfig(input) {
 }
 
 async function fetchSystemAiConfig(fetchImpl = fetch) {
-  const endpoint = `${basePath}/api/ai/generate`;
+  const endpoint = buildRuntimeApiPath("/api/ai/generate");
   try {
-    const response = await fetchImpl(`${basePath}/api/ai/config`, { cache: "no-store" });
+    const response = await fetchImpl(buildRuntimeApiPath("/api/ai/config"), { cache: "no-store" });
     if (!response.ok) throw new Error(`系统 AI 配置读取失败 (${response.status})`);
     const config = normalizeSystemAiConfig({ ...(await response.json()), endpoint });
     return { ...config, selection: await resolveAiSelection(config) };
@@ -856,7 +856,7 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
 
   async function generateCanvasImage(prompt) {
     const imagePrompt = [prompt, renderBrandImageHint(state.brandKit)].filter(Boolean).join("\n");
-    const response = await fetch(aiConfig.endpoint || basePath + "/api/ai/generate", {
+    const response = await fetch(aiConfig.endpoint || buildRuntimeApiPath("/api/ai/generate"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
