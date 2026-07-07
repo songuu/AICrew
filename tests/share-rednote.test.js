@@ -10,7 +10,9 @@ import {
   buildRednotePublishDeeplink,
   canLaunchRednoteDeeplink,
   supportsRednoteHandoff,
-  buildRednoteShareText
+  buildRednoteShareText,
+  buildRednoteHandoffRecord,
+  appendRednoteHandoffRecord
 } from "../lib/share/rednote.js";
 
 function parseRednoteDeeplink(url) {
@@ -132,4 +134,49 @@ test("buildRednoteShareText is defensive against non-array hashtags", () => {
   const out = buildRednoteShareText({ caption: "标题", hashtags: "not-an-array" });
   assert.deepEqual(out.hashtags, []);
   assert.equal(out.text, "标题");
+});
+
+test("buildRednoteHandoffRecord stores lightweight publish handoff metadata", () => {
+  const record = buildRednoteHandoffRecord({
+    id: "handoff_1",
+    action: "copy_text",
+    status: "completed",
+    message: "已复制",
+    createdAt: "2026-07-07T08:00:00.000Z",
+    task: {
+      id: "task_1",
+      scheduledAt: "2026-07-07T09:00:00.000Z",
+      brief: { productName: "玻尿酸面膜" }
+    },
+    exportItem: {
+      id: "export_1",
+      projectId: "project_1",
+      variantId: "variant_1",
+      name: "玻尿酸面膜 / A"
+    },
+    variant: {
+      id: "variant_1",
+      caption: "真实测评正文",
+      hashtags: ["护肤", "#面膜"]
+    },
+    imageFiles: [{ name: "cover.png", dataUrl: "data:image/png;base64,AAAA" }]
+  });
+
+  assert.equal(record.platform, "小红书");
+  assert.equal(record.taskId, "task_1");
+  assert.equal(record.exportId, "export_1");
+  assert.equal(record.variantId, "variant_1");
+  assert.equal(record.productName, "玻尿酸面膜");
+  assert.equal(record.shareText, "真实测评正文\n\n#护肤 #面膜");
+  assert.deepEqual(record.imageFileNames, ["cover.png"]);
+  assert.equal(record.imageCount, 1);
+  assert.equal(JSON.stringify(record).includes("data:image"), false);
+});
+
+test("appendRednoteHandoffRecord prepends, dedupes, and caps persisted handoffs", () => {
+  const state = { rednoteHandoffs: [{ id: "old" }, { id: "replace" }] };
+  const next = appendRednoteHandoffRecord(state, { id: "replace", status: "completed" }, 2);
+
+  assert.deepEqual(next.rednoteHandoffs, [{ id: "replace", status: "completed" }, { id: "old" }]);
+  assert.deepEqual(state.rednoteHandoffs, [{ id: "old" }, { id: "replace" }]);
 });

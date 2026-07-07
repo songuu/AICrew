@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeClientStateForSave } from "../lib/db/repositories/state.js";
+import { STATE_COLLECTION_KEYS, sanitizeClientStateForSave } from "../lib/db/repositories/state.js";
 
 test("sanitizeClientStateForSave treats credit fields as server-owned", () => {
   const sanitized = sanitizeClientStateForSave(
@@ -35,5 +35,18 @@ test("sanitizeClientStateForSave defaults new workspaces to the server grant", (
   assert.equal(sanitized.workspace.credits, 10000);
   assert.equal(sanitized.workspace.reservedCredits, 0);
   assert.equal(sanitized.workspace.creditOpeningBalance, 10000);
+  assert.deepEqual(sanitized.creditLedger, []);
+});
+
+test("rednote handoffs are client-owned collection rows", () => {
+  const handoffs = [{ id: "handoff_1", action: "copy_text", status: "completed" }];
+  const sanitized = sanitizeClientStateForSave({
+    workspace: { name: "Client" },
+    rednoteHandoffs: handoffs,
+    creditLedger: [{ id: "fake" }]
+  });
+
+  assert.ok(STATE_COLLECTION_KEYS.includes("rednoteHandoffs"));
+  assert.deepEqual(sanitized.rednoteHandoffs, handoffs);
   assert.deepEqual(sanitized.creditLedger, []);
 });

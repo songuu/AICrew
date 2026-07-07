@@ -39,7 +39,16 @@ import {
 } from "../lib/ai/config.js";
 import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
 import { runFlow, runFlowWithAI } from "../lib/flow/execute.js";
-import { REDNOTE_PROFILE_DEEPLINK, REDNOTE_PUBLISH_DEEPLINK, REDNOTE_PUBLISH_STEPS, canLaunchRednoteDeeplink, supportsRednoteHandoff, buildRednoteShareText } from "../lib/share/rednote.js";
+import {
+  REDNOTE_PROFILE_DEEPLINK,
+  REDNOTE_PUBLISH_DEEPLINK,
+  REDNOTE_PUBLISH_STEPS,
+  appendRednoteHandoffRecord,
+  buildRednoteHandoffRecord,
+  buildRednoteShareText,
+  canLaunchRednoteDeeplink,
+  supportsRednoteHandoff
+} from "../lib/share/rednote.js";
 import { stripCollectionMedia } from "../lib/state/storage-sanitize.js";
 import {
   setTaskScheduledAt,
@@ -208,6 +217,35 @@ function taskProductName(task) {
 // scheduledAt 是否为可解析的有效时刻（防损坏/篡改存储里的非 ISO truthy 串触发下游抛出）。
 function hasValidSchedule(task) {
   return Boolean(task?.scheduledAt) && !Number.isNaN(Date.parse(task.scheduledAt));
+}
+
+function handoffStatusFromMessage(message) {
+  const text = String(message || "");
+  if (/取消/.test(text)) return "cancelled";
+  if (/失败|无法|请手动|不支持/.test(text)) return "fallback";
+  return "completed";
+}
+
+function findTaskForExport(state, exportItem) {
+  if (!state || !exportItem) return null;
+  if (exportItem.taskId) {
+    const direct = (state.tasks || []).find(task => task.id === exportItem.taskId);
+    if (direct) return direct;
+  }
+  if (exportItem.projectId) {
+    const project = (state.projects || []).find(item => item.id === exportItem.projectId);
+    if (project?.taskId) {
+      const projectTask = (state.tasks || []).find(task => task.id === project.taskId);
+      if (projectTask) return projectTask;
+    }
+  }
+  if (exportItem.variantId) {
+    return (state.tasks || []).find(task =>
+      (task.variants || []).some(variant => variant.id === exportItem.variantId) ||
+      (task.exports || []).some(item => item.variantId === exportItem.variantId)
+    ) || null;
+  }
+  return null;
 }
 
 // —— 小红书一键带稿交接（Tier 0）的浏览器副作用层 ——
@@ -709,6 +747,20 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
     setState(current => setTaskScheduledAt(current, taskId, isoUtc));
   }
 
+  function recordRednoteHandoff(payload) {
+    updateState(current => {
+      if (!current) return current;
+      return appendRednoteHandoffRecord(
+        current,
+        buildRednoteHandoffRecord({
+          id: makeId("rednote_handoff"),
+          createdAt: new Date().toISOString(),
+          ...payload
+        })
+      );
+    });
+  }
+
   function toggleAssetReference(assetId) {
     setReferencedAssetIds(current =>
       current.includes(assetId) ? current.filter(id => id !== assetId) : [...current, assetId]
@@ -938,6 +990,7 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
           ...nextTask.exports.map(item => ({
             ...item,
             id: makeId("export"),
+            taskId: nextTask.id,
             projectId: nextProject.id,
             projectName: nextProject.name,
             createdAt: new Date().toISOString()
@@ -1210,7 +1263,10 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
 
   function exportVariant() {
     if (!project || !activeVariant) return;
-    const record = buildExportRecord(project, activeVariant, task?.brief.platform || "抖音", { brief: task?.brief, taskArtifacts: task?.artifacts });
+    const record = {
+      ...buildExportRecord(project, activeVariant, task?.brief.platform || "抖音", { brief: task?.brief, taskArtifacts: task?.artifacts }),
+      taskId: task?.id || null
+    };
     setState(current => ({
       ...current,
       exports: [record, ...current.exports]
@@ -1293,6 +1349,7 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
               editTask={editHistoryTask}
               toggleLock={toggleHistoryLock}
               setTaskSchedule={setTaskSchedule}
+              onRednoteHandoff={recordRednoteHandoff}
               now={nowTick}
               creditsEnabled={creditsEnabled}
             />
@@ -1345,7 +1402,7 @@ export function AICrewStudio({ initialView = "dashboard", initialAiConfig = null
           )}
           {view === "skills" && <Skills allSkills={allSkills} creditsEnabled={creditsEnabled} />}
           {view === "brand" && <Brand state={state} saveBrand={saveBrand} />}
-          {view === "exports" && <Exports state={state} />}
+          {view === "exports" && <Exports state={state} onRednoteHandoff={recordRednoteHandoff} />}
           {view === "billing" && creditsEnabled && <Billing state={state} onClaimDailyCredits={claimDailyCredits} dailyCheckInPending={dailyCheckInPending} />}
           {view === "admin" && <Admin state={state} creditsEnabled={creditsEnabled} />}
           {view === "onboarding" && <Onboarding state={state} updateProfile={updateProfile} />}
@@ -1700,12 +1757,12 @@ function Workbench({
   );
 }
 
-function History({ state, selectedTaskId, selectTask, openTask, editTask, toggleLock, setTaskSchedule, now, creditsEnabled = true }) {
+function History({ state, selectedTaskId, selectTask, openTask, editTask, toggleLock, setTaskSchedule, onRednoteHandoff, now, creditsEnabled = true }) {
   const projectByTask = new Map((state.projects || []).map(project => [project.taskId, project]));
   const selectedTask = state.tasks.find(task => task.id === selectedTaskId) || state.tasks[0];
   return (
     <>
-      <DueScheduleQueue state={state} now={now} />
+      <DueScheduleQueue state={state} now={now} onRednoteHandoff={onRednoteHandoff} />
       <div className="page-grid two history-page">
       <section className="panel wide">
         <div className="panel-heading">
@@ -2133,7 +2190,7 @@ function ScheduleControl({ task, onSchedule }) {
 
 // 排期到期队列（最后一公里）：列出到点/逾期且含小红书产物的 task，逐产物复用 RednoteHandoff
 // 一键带稿唤起官方发布器（人工确认）。imageFiles 经 assembleExportBundle 派生，强制带图不丢图。
-function DueScheduleQueue({ state, now }) {
+function DueScheduleQueue({ state, now, onRednoteHandoff }) {
   const dueTasks = selectDueTasks(state, now);
   if (!dueTasks.length) return null;
   return (
@@ -2162,7 +2219,7 @@ function DueScheduleQueue({ state, now }) {
                 return (
                   <div className="schedule-due-export" key={item.variantId || item.name}>
                     <span className="schedule-due-export-name">{item.name}</span>
-                    <RednoteHandoff variant={variant} imageFiles={bundle.imageFiles} />
+                    <RednoteHandoff task={task} exportItem={item} variant={variant} imageFiles={bundle.imageFiles} onRecord={onRednoteHandoff} />
                   </div>
                 );
               })}
@@ -2175,38 +2232,60 @@ function DueScheduleQueue({ state, now }) {
 }
 
 // 对标小鸡AI App 的发布交接，但终点是用户在小红书发布器手动确认，不做任何自动发布。
-function RednoteHandoff({ variant, imageFiles }) {
+function RednoteHandoff({ variant, imageFiles, task = null, exportItem = null, onRecord }) {
   const [status, setStatus] = useState("");
   const share = buildRednoteShareText(variant || {});
   if (!share.text) return null;
 
+  function record(action, nextStatus, message) {
+    if (typeof onRecord !== "function") return;
+    onRecord({
+      action,
+      status: nextStatus,
+      message,
+      task,
+      exportItem,
+      variant,
+      imageFiles,
+      share
+    });
+  }
+
+  function settle(action, message, nextStatus = handoffStatusFromMessage(message)) {
+    setStatus(message);
+    record(action, nextStatus, message);
+  }
+
   async function handleOneClick() {
     setStatus("正在带稿去发布…");
-    setStatus(await oneClickRednotePublish(share.text, imageFiles || []));
+    const message = await oneClickRednotePublish(share.text, imageFiles || []);
+    settle("one_click", message);
   }
   async function handleCopy() {
     const ok = await copyShareText(share.text);
-    setStatus(ok ? "已复制文案，去小红书发布器粘贴" : "复制失败，请手动选择文案");
+    const message = ok ? "已复制文案，去小红书发布器粘贴" : "复制失败，请手动选择文案";
+    settle("copy_text", message, ok ? "completed" : "failed");
   }
   async function handleShare() {
     setStatus("正在准备分享…");
-    setStatus(await shareToRednote(share.text, imageFiles || []));
+    const message = await shareToRednote(share.text, imageFiles || []);
+    settle("web_share", message);
   }
   async function handleOpenPublisher() {
     const ok = await copyShareText(share.text);
-    if (openRednoteDeeplink(REDNOTE_PUBLISH_DEEPLINK)) {
-      setStatus(ok ? "文案已复制，已尝试唤起小红书个人入口发布器" : "已尝试唤起小红书个人入口发布器，请手动复制文案");
-      return;
-    }
-    setStatus(ok ? "文案已复制；当前桌面浏览器未注册小红书 App 协议，请在手机小红书个人页新建笔记" : "桌面浏览器无法唤起小红书 App，请手动复制文案");
+    const launched = openRednoteDeeplink(REDNOTE_PUBLISH_DEEPLINK);
+    const message = launched
+      ? (ok ? "文案已复制，已尝试唤起小红书个人入口发布器" : "已尝试唤起小红书个人入口发布器，请手动复制文案")
+      : (ok ? "文案已复制；当前桌面浏览器未注册小红书 App 协议，请在手机小红书个人页新建笔记" : "桌面浏览器无法唤起小红书 App，请手动复制文案");
+    settle("open_publisher", message, launched ? "completed" : (ok ? "fallback" : "failed"));
   }
   async function handleOpenProfile() {
     const ok = await copyShareText(share.text);
-    if (openRednoteDeeplink(REDNOTE_PROFILE_DEEPLINK)) {
-      setStatus(ok ? "文案已复制，已尝试打开小红书个人资料页" : "已尝试打开小红书个人资料页，请手动复制文案");
-      return;
-    }
-    setStatus(ok ? "文案已复制；当前桌面浏览器未注册小红书 App 协议，请在手机打开个人资料页" : "请手动复制文案并在手机打开小红书");
+    const launched = openRednoteDeeplink(REDNOTE_PROFILE_DEEPLINK);
+    const message = launched
+      ? (ok ? "文案已复制，已尝试打开小红书个人资料页" : "已尝试打开小红书个人资料页，请手动复制文案")
+      : (ok ? "文案已复制；当前桌面浏览器未注册小红书 App 协议，请在手机打开个人资料页" : "请手动复制文案并在手机打开小红书");
+    settle("open_profile", message, launched ? "completed" : (ok ? "fallback" : "failed"));
   }
 
   return (
@@ -2235,7 +2314,7 @@ function RednoteHandoff({ variant, imageFiles }) {
   );
 }
 
-function Exports({ state }) {
+function Exports({ state, onRednoteHandoff }) {
   return (
     <div className="page-grid">
       <section className="panel wide">
@@ -2249,6 +2328,7 @@ function Exports({ state }) {
           {state.exports.map(item => {
             const fileNames = exportFileNames(item);
             const variant = findVariantById(state, item.variantId);
+            const task = findTaskForExport(state, item);
             const bundle = assembleExportBundle(item, variant);
             return (
               <article className="export-card" key={item.id}>
@@ -2279,7 +2359,7 @@ function Exports({ state }) {
                     </button>
                   ))}
                 </div>
-                {supportsRednoteHandoff(item.platform) && <RednoteHandoff variant={variant} imageFiles={bundle.imageFiles} />}
+                {supportsRednoteHandoff(item.platform) && <RednoteHandoff task={task} exportItem={item} variant={variant} imageFiles={bundle.imageFiles} onRecord={onRednoteHandoff} />}
                 <small>{formatDate(item.createdAt)}</small>
               </article>
             );
