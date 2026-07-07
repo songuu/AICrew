@@ -17,7 +17,7 @@ import {
   orderedAgentIds,
   validateFlow,
   hasAgent,
-  skillToFlow,
+  skillIdsToFlow,
   flowToSkill
 } from "../lib/flow/model.js";
 import { routeIdeaToFlow } from "../lib/flow/router.js";
@@ -26,7 +26,27 @@ import { computeFlowOverlay } from "../lib/flow/overlay.js";
 import { validateMaterial, normalizeMaterial } from "../lib/storage/materialStore.js";
 import { CanvasStudio } from "./canvas/CanvasStudio.jsx";
 
-const skillNameFor = skillId => skills.find(skill => skill.id === skillId)?.name || "";
+function normalizeSkillIds(skillIds = []) {
+  const seen = new Set();
+  return (Array.isArray(skillIds) ? skillIds : [])
+    .map(id => String(id || "").trim())
+    .filter(Boolean)
+    .filter(id => {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    })
+    .filter(id => skills.some(skill => skill.id === id));
+}
+
+function skillsForIds(skillIds = []) {
+  const byId = new Map(skills.map(skill => [skill.id, skill]));
+  return normalizeSkillIds(skillIds).map(id => byId.get(id)).filter(Boolean);
+}
+
+function joinSkillField(selectedSkills, key) {
+  return selectedSkills.map(skill => skill?.[key]).filter(Boolean).join("；");
+}
 
 function mergeMaterials(...groups) {
   const byName = new Map();
@@ -94,14 +114,15 @@ function SkillCard({ skill, active, busy, onPick, creditsEnabled = true }) {
   );
 }
 
-function SkillPickerPanel({ tab, onTab, selectedId, onPick, onClose, busy, query, creditsEnabled = true }) {
+function SkillPickerPanel({ tab, onTab, selectedIds = [], onPick, onClose, busy, query, creditsEnabled = true }) {
   // 获客平台 tab（小红书/抖音/视频号）→ 按获客漏斗阶段分段渲染 + 顶部意图推荐行；
   // 其余分类（推荐/电商/美妆/短视频）→ 扁平列表（行为不变）。数据全部来自 domain 单一来源。
   const funnel = isPromotionGroup(tab) ? promotionFunnelForGroup(tab) : null;
   const flatList = funnel ? null : skillsInGroup(tab);
   const recommended = funnel && query && query.trim() ? recommendForGroup(tab, { query, limit: 3 }) : [];
+  const selectedSet = new Set(selectedIds);
   const renderCard = skill => (
-    <SkillCard key={skill.id} skill={skill} active={selectedId === skill.id} busy={busy} onPick={onPick} creditsEnabled={creditsEnabled} />
+    <SkillCard key={skill.id} skill={skill} active={selectedSet.has(skill.id)} busy={busy} onPick={onPick} creditsEnabled={creditsEnabled} />
   );
   return (
     <>
@@ -111,7 +132,7 @@ function SkillPickerPanel({ tab, onTab, selectedId, onPick, onClose, busy, query
         <div className="oc-skillpanel-head">
           <div>
             <strong>Skills</strong>
-            <small>选择一个创作技能，AICrew 按该技能编排并生成</small>
+            <small>可选择多个创作技能，AICrew 合并编排并生成</small>
           </div>
           <button type="button" className="oc-skillpanel-close" onClick={onClose} aria-label="关闭技能选择">
             ×
@@ -132,7 +153,7 @@ function SkillPickerPanel({ tab, onTab, selectedId, onPick, onClose, busy, query
             </button>
           ))}
         </div>
-        <div className="oc-skill-list" role="listbox" aria-label="技能列表">
+        <div className="oc-skill-list" role="listbox" aria-label="技能列表" aria-multiselectable="true">
           {/* 扁平分类：原样列出 */}
           {flatList && flatList.length === 0 && <p className="oc-skill-empty">该分类暂无技能</p>}
           {flatList && flatList.map(renderCard)}
@@ -245,7 +266,7 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
   const [params, setParams] = useState(() => ({
     platform: findPlatformPreset(parseBriefText(idea).platform).name,
     audience: "",
-    skillId: "", // 空 = 由中枢自动匹配（auto/semi）/ 由对话搭建（manual）
+    skillIds: [], // 空 = 由中枢自动匹配（auto/semi）/ 由对话搭建（manual）；多选时按选择顺序合并
     materials: []
   }));
   const [materialError, setMaterialError] = useState("");
@@ -270,36 +291,39 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
       ...prev,
       platform: platformName,
       audience: brief.targetAudience || "",
-      skillId: editSeed.skillId || "",
+      skillIds: editSeed.skillId ? [editSeed.skillId] : [],
       materials: mergeMaterials(brief.materials || [])
     }));
     if (editSeed.skillId) {
-      setFlow(skillToFlow(editSeed.skillId, mode, flow.brief));
+      setFlow(skillIdsToFlow([editSeed.skillId], mode, flow.brief));
       setRoute(null);
       setPhase("ready");
       setRevealCount(Infinity);
     }
   }, [editSeed?.id]);
-  // 指定 skill：立即用该 skill 播种 flow，使节点链 / credits 同步反映选择；清空则回到自动编排。
+  // 指定 skill：点击卡片切换选中；多选时合并 agent 并即时播种 flow。
   function onPickSkill(skillId) {
-    setParams(prev => ({ ...prev, skillId }));
-    if (skillId) {
-      setFlow(skillToFlow(skillId, mode, flow.brief));
+    const current = normalizeSkillIds(params.skillIds);
+    const next = current.includes(skillId)
+      ? current.filter(id => id !== skillId)
+      : [...current, skillId];
+    setParams(prev => ({ ...prev, skillIds: next }));
+    if (next.length) {
+      setFlow(skillIdsToFlow(next, mode, flow.brief));
       setRoute(null);
       setPhase("ready");
       setRevealCount(Infinity);
     }
   }
 
-  // 卡片选中：选定技能后关闭浮层（RoboNeo 选中即收起，技能以 chip 锚定输入框）。
+  // 卡片点击：保持浮层打开，方便连续选择多个 skill。
   function pickSkillFromCard(skillId) {
     onPickSkill(skillId);
-    setSkillPickerOpen(false);
   }
 
-  // 清除技能：回到自动编排 / 自由对话。仅清 skillId，不强行重置已搭好的 flow。
+  // 清除技能：回到自动编排 / 自由对话。仅清 skillIds，不强行重置已搭好的 flow。
   function clearSkill() {
-    setParams(prev => ({ ...prev, skillId: "" }));
+    setParams(prev => ({ ...prev, skillIds: [] }));
   }
 
   // 上传素材：组件侧 FileReader 读 dataURL，纯校验（MIME/体量）下沉 materialStore。
@@ -335,10 +359,16 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
     ...params,
     materials: mergeMaterials(libraryMaterials, params.materials)
   }), [idea, params, libraryMaterials]);
+  const selectedSkillIds = useMemo(() => normalizeSkillIds(params.skillIds), [params.skillIds]);
+  const selectedSkills = useMemo(() => skillsForIds(selectedSkillIds), [selectedSkillIds]);
+  const selectedSkillName = useMemo(() => selectedSkills.map(skill => skill.name).join(" + "), [selectedSkills]);
+  const selectedSkillPromise = useMemo(() => joinSkillField(selectedSkills, "promise"), [selectedSkills]);
+  const selectedSkillBestFor = useMemo(() => joinSkillField(selectedSkills, "bestFor"), [selectedSkills]);
   const credits = useMemo(() => estimateCreditsForSkill(quoteBrief, flowToSkill(flow, {
-    skillId: params.skillId || undefined,
-    name: skillNameFor(params.skillId) || "自定义编排"
-  })), [flow, quoteBrief, params.skillId]);
+    skillId: selectedSkillIds[0] || undefined,
+    skillIds: selectedSkillIds.length ? selectedSkillIds : undefined,
+    name: selectedSkillName || "自定义编排"
+  })), [flow, quoteBrief, selectedSkillIds, selectedSkillName]);
   const estimatedCredits = creditEstimateTotal(credits);
   const validity = useMemo(() => validateFlow(flow), [flow]);
   const orderedIds = orderedAgentIds(flow);
@@ -354,17 +384,17 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
   function switchMode(nextMode) {
     onModeChange(nextMode);
     // 创作参数（平台/受众/skill/素材）跨模式保留：已指定 skill 时在新模式下重新播种。
-    setFlow(params.skillId ? skillToFlow(params.skillId, nextMode, flow.brief) : createFlow(nextMode));
+    setFlow(selectedSkillIds.length ? skillIdsToFlow(selectedSkillIds, nextMode, flow.brief) : createFlow(nextMode));
     setRoute(null);
-    setPhase(params.skillId ? "ready" : "idle");
-    setRevealCount(params.skillId ? Infinity : 0);
+    setPhase(selectedSkillIds.length ? "ready" : "idle");
+    setRevealCount(selectedSkillIds.length ? Infinity : 0);
   }
 
   // 中枢路由：auto/semi 共用。auto 走点亮动画后自动运行；semi 停在可编辑态。
   function runRouter(thenRun) {
-    // 已显式指定 skill：跳过中枢推断，直接用该 skill 播种（thenRun 时即运行，无点亮动画）。
-    if (params.skillId) {
-      const seeded = skillToFlow(params.skillId, mode, flow.brief);
+    // 已显式指定 skill：跳过中枢推断，直接用选中的 skill 列表播种（thenRun 时即运行，无点亮动画）。
+    if (selectedSkillIds.length) {
+      const seeded = skillIdsToFlow(selectedSkillIds, mode, flow.brief);
       setFlow(seeded);
       setRoute(null);
       setPhase("ready");
@@ -412,7 +442,7 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
 
   function triggerRun(targetFlow = flow, briefOverride) {
     // targetFlow 已是 skill 播种态（onPickSkill / switchMode / runRouter 共同保证）：直接执行。
-    // 此处不再重新 skillToFlow，否则会覆盖掉 semi 勾选 / manual 对话对该 flow 的微调。
+    // 此处不再重新 skillIdsToFlow，否则会覆盖掉 semi 勾选 / manual 对话对该 flow 的微调。
     const check = validateFlow(targetFlow);
     if (!check.valid) return;
     // 手动模式：标记本次运行来自对话，生成完成后把结果卡内联进对话流。
@@ -424,13 +454,13 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
     });
     // 选中预设 skill 时透传创作意图（promise/bestFor），经 flowToSkill 进入 AI prompt，
     // 使「选了哪个技能」真正改变生成结果（对标 RoboNeo 技能驱动生成）。
-    const picked = skills.find(skill => skill.id === params.skillId);
     const meta = {
-      name: skillNameFor(params.skillId) || route?.matchedSkill?.name || "自定义编排",
+      name: selectedSkillName || route?.matchedSkill?.name || "自定义编排",
       category: MODES.find(m => m.id === mode)?.name,
-      skillId: params.skillId || undefined,
-      promise: picked?.promise,
-      bestFor: picked?.bestFor
+      skillId: selectedSkillIds[0] || undefined,
+      skillIds: selectedSkillIds.length ? selectedSkillIds : undefined,
+      promise: selectedSkillPromise || undefined,
+      bestFor: selectedSkillBestFor || undefined
     };
     onRun(brief, targetFlow, meta);
   }
@@ -541,9 +571,6 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
     </>
   );
 
-  // 当前选中的技能对象（驱动 chip 展示与浮层选中态）。
-  const selectedSkill = skills.find(skill => skill.id === params.skillId) || null;
-
   // 技能选择字段：trigger（兼作选中 chip）+ 清除按钮 + 浮层。三模式共用同一实例，
   // 保证同一时刻只挂载一个浮层（手动模式在 composer 渲染，自动/半自动在 paramsBar 渲染）。
   const skillField = (
@@ -551,22 +578,26 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
       <div className="oc-skill-control">
         <button
           type="button"
-          className={`oc-skill-trigger ${selectedSkill ? "on" : ""}`}
+          className={`oc-skill-trigger ${selectedSkills.length ? "on" : ""}`}
           disabled={busy}
           aria-haspopup="dialog"
           aria-expanded={skillPickerOpen}
           onClick={() => setSkillPickerOpen(open => !open)}
-          title={selectedSkill ? selectedSkill.promise : "选择创作技能"}
-          style={selectedSkill ? { "--c1": selectedSkill.palette?.[0] || "#a78bfa" } : undefined}
+          title={selectedSkills.length ? selectedSkillPromise || selectedSkillName : "选择创作技能"}
+          style={selectedSkills[0] ? { "--c1": selectedSkills[0].palette?.[0] || "#a78bfa" } : undefined}
         >
-          <span className="oc-skill-trigger-icon">{selectedSkill ? selectedSkill.icon || "✦" : "✦"}</span>
-          <span className="oc-skill-trigger-text">{selectedSkill ? selectedSkill.name : "选择创作技能"}</span>
+          <span className="oc-skill-trigger-icon">{selectedSkills.length > 1 ? selectedSkills.length : selectedSkills[0]?.icon || "✦"}</span>
+          <span className={`oc-skill-trigger-text ${selectedSkills.length > 1 ? "multi" : ""}`}>
+            {selectedSkills.length ? selectedSkills.map(skill => (
+              <span key={skill.id} className="oc-skill-trigger-token">{skill.name}</span>
+            )) : "选择创作技能"}
+          </span>
           <span className="oc-skill-caret" aria-hidden>
             ▾
           </span>
         </button>
-        {selectedSkill && (
-          <button type="button" className="oc-skill-clear" disabled={busy} onClick={clearSkill} aria-label="清除技能">
+        {selectedSkills.length > 0 && (
+          <button type="button" className="oc-skill-clear" disabled={busy} onClick={clearSkill} aria-label="清除全部技能">
             ×
           </button>
         )}
@@ -575,7 +606,7 @@ export function OrchestratorConsole({ onRun, generating, aiReady, aiConfig, task
         <SkillPickerPanel
           tab={skillTab}
           onTab={setSkillTab}
-          selectedId={params.skillId}
+          selectedIds={selectedSkillIds}
           onPick={pickSkillFromCard}
           onClose={() => setSkillPickerOpen(false)}
           busy={busy}

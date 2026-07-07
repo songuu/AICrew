@@ -5260,10 +5260,32 @@ body::after {
   line-height: 1;
 }
 .oc-skill-trigger-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
+}
+.oc-skill-trigger-text.multi {
+  flex-wrap: wrap;
+  white-space: normal;
+  line-height: 1.5;
+}
+.oc-skill-trigger-token {
+  display: inline-flex;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-skill-trigger-text.multi .oc-skill-trigger-token {
+  max-width: 130px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--c1, var(--violet)) 18%, transparent);
 }
 .oc-skill-caret {
   color: var(--muted);

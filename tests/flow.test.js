@@ -15,6 +15,7 @@ import {
   estimateFlowCredits,
   flowToSkill,
   skillToFlow,
+  skillIdsToFlow,
   sanitizeFlow,
   hasAgent,
   hasBranching
@@ -70,6 +71,19 @@ test("skillToFlow falls back to first skill for unknown id and stays non-empty",
   const flow = skillToFlow("does_not_exist", "auto");
   assert.ok(flow.nodes.length > 0);
   assert.deepEqual(orderedAgentIds(flow), findSkill("does_not_exist").agents);
+});
+
+test("skillIdsToFlow merges multiple skills by selection order and dedupes agents", () => {
+  const flow = skillIdsToFlow(["rednote_seeding_note_v1", "hook_lab_v1", "rednote_seeding_note_v1"], "semi");
+  const expected = [];
+  for (const skillId of ["rednote_seeding_note_v1", "hook_lab_v1"]) {
+    for (const agentId of findSkill(skillId).agents) {
+      if (!expected.includes(agentId)) expected.push(agentId);
+    }
+  }
+  assert.equal(flow.mode, "semi");
+  assert.deepEqual(orderedAgentIds(flow), expected);
+  assert.deepEqual(flowToSkill(flow, { skillIds: ["rednote_seeding_note_v1", "hook_lab_v1"] }).skillIds, ["rednote_seeding_note_v1", "hook_lab_v1"]);
 });
 
 test("addNode is immutable", () => {
@@ -252,6 +266,20 @@ test("runFlow produces the same task contract as a preset skill", () => {
   assert.equal(viaFlow.variants.length, viaSkill.variants.length);
   assert.equal(viaFlow.exports.length, viaSkill.exports.length);
   assert.ok(viaFlow.qa.overallScore > 0);
+});
+
+test("runFlow preserves multiple selected skill ids in task metadata", () => {
+  const skillIds = ["rednote_seeding_note_v1", "hook_lab_v1"];
+  const flow = skillIdsToFlow(skillIds, "semi");
+  const task = runFlow({
+    brief: { productName: "露营灯", platform: "小红书", sellingPoints: "柔光便携" },
+    flow,
+    meta: { skillId: skillIds[0], skillIds, name: "多技能编排" }
+  });
+
+  assert.deepEqual(task.skillIds, skillIds);
+  assert.deepEqual(task.orchestrator.skillIds, skillIds);
+  assert.deepEqual(task.agents.map(agent => agent.id), orderedAgentIds(flow));
 });
 
 test("flowToAiModes maps copy node to text and visual node to image", () => {
