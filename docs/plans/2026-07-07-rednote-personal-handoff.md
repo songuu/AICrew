@@ -24,7 +24,7 @@ invariant_tests:
 - 重新复核小鸡 AI App「一键发布」原理：官方分享交接 + URL Scheme，不做 RPA/自动化。
 - 小红书默认发布深链从旧 `post_note` 收敛到官方 `xhsdiscover://post`。
 - 发布深链携带 `source.type=personal`，贴近「个人页面入口」语义。
-- 内容带入保持双路径：Web Share 直接带 text/files；失败时 Clipboard 复制正文，再跳转发布器。
+- 内容带入保持双路径：Web Share 直接带 text/files；失败时 Clipboard 复制正文，再跳转发布器。桌面 Chrome/Edge 若未注册 `xhsdiscover://`，不得发起 scheme 跳转，避免 Console 报 no registered handler。
 
 ### Non-Scope
 - 不做服务端代发布、批量定时无人发布、自动评论/点赞/私信。
@@ -50,8 +50,8 @@ invariant_tests:
 
 | 改动点 | 触发动作 | 中间层 | 结果 |
 |--------|----------|--------|------|
-| 一键带稿去发布 | 点主按钮 | Web Share 带 text/files；否则 Clipboard + `REDNOTE_PUBLISH_DEEPLINK` | 到小红书官方发布器，用户确认发布 |
-| 个人入口发布 | 点按钮 | Clipboard + `xhsdiscover://post?source=...` | 从 personal source 语义进入发布器 |
+| 一键带稿去发布 | 点主按钮 | Web Share 带 text/files；否则移动端 Clipboard + `REDNOTE_PUBLISH_DEEPLINK`，桌面只复制提示 | 到小红书官方发布器，用户确认发布；桌面不报 scheme handler 错误 |
+| 个人入口发布 | 点按钮 | 移动端 Clipboard + `xhsdiscover://post?source=...`；桌面复制提示 | 从 personal source 语义进入发布器；桌面不触发未注册协议 |
 | 个人资料入口 | 点按钮 | Clipboard + `xhsdiscover://me/profile` | 可打开官方个人资料页，内容仍在剪贴板 |
 | 纯函数测试 | `node tests/share-rednote.test.js` | URLSearchParams + JSON decode | 深链和 payload 可回归 |
 
@@ -96,6 +96,7 @@ invariant_tests:
 - `npm test`：343 tests，341 pass，2 skip（`SUPABASE_DB_URL` 未配置），0 fail。
 - `npm run build`：Next.js 16.2.9 production build pass。
 - `git diff --check`：pass（仅 Git CRLF warning）。
+- 2026-07-07 follow-up：新增桌面协议门控，Windows/Mac/Linux 桌面不再执行 `xhsdiscover://` 跳转，避免 Chrome `scheme does not have a registered handler`。
 - Runtime smoke：`REDNOTE_PUBLISH_DEEPLINK` base = `xhsdiscover://post`，source.type = `personal`，extraInfo.from = `aicrew`。
 
 ## Phase 5: Compound

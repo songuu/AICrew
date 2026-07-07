@@ -39,7 +39,7 @@ import {
 } from "../lib/ai/config.js";
 import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
 import { runFlow, runFlowWithAI } from "../lib/flow/execute.js";
-import { REDNOTE_PROFILE_DEEPLINK, REDNOTE_PUBLISH_DEEPLINK, REDNOTE_PUBLISH_STEPS, supportsRednoteHandoff, buildRednoteShareText } from "../lib/share/rednote.js";
+import { REDNOTE_PROFILE_DEEPLINK, REDNOTE_PUBLISH_DEEPLINK, REDNOTE_PUBLISH_STEPS, canLaunchRednoteDeeplink, supportsRednoteHandoff, buildRednoteShareText } from "../lib/share/rednote.js";
 import { stripCollectionMedia } from "../lib/state/storage-sanitize.js";
 import {
   setTaskScheduledAt,
@@ -223,6 +223,25 @@ async function copyShareText(text) {
   }
 }
 
+function shouldAttemptRednoteDeeplink() {
+  if (typeof navigator === "undefined") return false;
+  return canLaunchRednoteDeeplink({
+    userAgent: navigator.userAgent,
+    platform: navigator.platform,
+    maxTouchPoints: navigator.maxTouchPoints
+  });
+}
+
+function openRednoteDeeplink(url) {
+  if (!shouldAttemptRednoteDeeplink()) return false;
+  try {
+    window.location.href = url;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // 把导出图片（dataUrl / https url）转成 Web Share 需要的 File；失败返回 null（被调用方过滤）。
 async function fileFromExportImage(file) {
   try {
@@ -284,14 +303,14 @@ async function oneClickRednotePublish(text, imageFiles = []) {
       // 分享失败则落到深链路径
     }
   }
-  // 路径二：复制文案 + 唤起官方发布器（落地后长按粘贴）
+  // 路径二：复制文案 + 移动端唤起官方发布器；桌面不触发未注册 scheme 错误。
   const copied = await copyShareText(text);
-  try {
-    window.location.href = REDNOTE_PUBLISH_DEEPLINK;
+  if (openRednoteDeeplink(REDNOTE_PUBLISH_DEEPLINK)) {
     return copied ? "文案已复制并唤起小红书个人入口发布器，落地后粘贴发布" : "已唤起小红书个人入口发布器，请手动粘贴文案";
-  } catch {
-    return copied ? "文案已复制，请从小红书个人页新建笔记后粘贴发布" : "请手动复制文案到小红书发布";
   }
+  return copied
+    ? "文案已复制；当前桌面浏览器未注册小红书 App 协议，请在手机小红书个人页新建笔记后粘贴发布"
+    : "当前桌面浏览器无法直接唤起小红书 App，请手动复制文案到手机发布";
 }
 
 function readState() {
@@ -2175,21 +2194,19 @@ function RednoteHandoff({ variant, imageFiles }) {
   }
   async function handleOpenPublisher() {
     const ok = await copyShareText(share.text);
-    try {
-      window.location.href = REDNOTE_PUBLISH_DEEPLINK;
+    if (openRednoteDeeplink(REDNOTE_PUBLISH_DEEPLINK)) {
       setStatus(ok ? "文案已复制，已尝试唤起小红书个人入口发布器" : "已尝试唤起小红书个人入口发布器，请手动复制文案");
-    } catch {
-      setStatus(ok ? "文案已复制，请在手机小红书个人页手动新建笔记" : "唤起失败，请手动复制文案");
+      return;
     }
+    setStatus(ok ? "文案已复制；当前桌面浏览器未注册小红书 App 协议，请在手机小红书个人页新建笔记" : "桌面浏览器无法唤起小红书 App，请手动复制文案");
   }
   async function handleOpenProfile() {
     const ok = await copyShareText(share.text);
-    try {
-      window.location.href = REDNOTE_PROFILE_DEEPLINK;
+    if (openRednoteDeeplink(REDNOTE_PROFILE_DEEPLINK)) {
       setStatus(ok ? "文案已复制，已尝试打开小红书个人资料页" : "已尝试打开小红书个人资料页，请手动复制文案");
-    } catch {
-      setStatus(ok ? "文案已复制，请手动打开小红书个人资料页" : "请手动复制文案并打开小红书");
+      return;
     }
+    setStatus(ok ? "文案已复制；当前桌面浏览器未注册小红书 App 协议，请在手机打开个人资料页" : "请手动复制文案并在手机打开小红书");
   }
 
   return (
