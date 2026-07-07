@@ -39,7 +39,7 @@ import {
 } from "../lib/ai/config.js";
 import { runCreativeWorkflowWithAI } from "../lib/ai/workflow.js";
 import { runFlow, runFlowWithAI } from "../lib/flow/execute.js";
-import { REDNOTE_PUBLISH_DEEPLINK, REDNOTE_PUBLISH_STEPS, supportsRednoteHandoff, buildRednoteShareText } from "../lib/share/rednote.js";
+import { REDNOTE_PROFILE_DEEPLINK, REDNOTE_PUBLISH_DEEPLINK, REDNOTE_PUBLISH_STEPS, supportsRednoteHandoff, buildRednoteShareText } from "../lib/share/rednote.js";
 import { stripCollectionMedia } from "../lib/state/storage-sanitize.js";
 import {
   setTaskScheduledAt,
@@ -288,9 +288,9 @@ async function oneClickRednotePublish(text, imageFiles = []) {
   const copied = await copyShareText(text);
   try {
     window.location.href = REDNOTE_PUBLISH_DEEPLINK;
-    return copied ? "文案已复制并唤起发布器，落地后长按粘贴发布" : "已唤起发布器，请手动粘贴文案";
+    return copied ? "文案已复制并唤起小红书个人入口发布器，落地后粘贴发布" : "已唤起小红书个人入口发布器，请手动粘贴文案";
   } catch {
-    return copied ? "文案已复制，请打开小红书新建笔记后粘贴发布" : "请手动复制文案到小红书发布";
+    return copied ? "文案已复制，请从小红书个人页新建笔记后粘贴发布" : "请手动复制文案到小红书发布";
   }
 }
 
@@ -2173,12 +2173,22 @@ function RednoteHandoff({ variant, imageFiles }) {
     setStatus("正在准备分享…");
     setStatus(await shareToRednote(share.text, imageFiles || []));
   }
-  function handleOpenPublisher() {
+  async function handleOpenPublisher() {
+    const ok = await copyShareText(share.text);
     try {
       window.location.href = REDNOTE_PUBLISH_DEEPLINK;
-      setStatus("已尝试唤起小红书发布器（需移动端已安装小红书）");
+      setStatus(ok ? "文案已复制，已尝试唤起小红书个人入口发布器" : "已尝试唤起小红书个人入口发布器，请手动复制文案");
     } catch {
-      setStatus("唤起失败，请在手机小红书内手动新建笔记");
+      setStatus(ok ? "文案已复制，请在手机小红书个人页手动新建笔记" : "唤起失败，请手动复制文案");
+    }
+  }
+  async function handleOpenProfile() {
+    const ok = await copyShareText(share.text);
+    try {
+      window.location.href = REDNOTE_PROFILE_DEEPLINK;
+      setStatus(ok ? "文案已复制，已尝试打开小红书个人资料页" : "已尝试打开小红书个人资料页，请手动复制文案");
+    } catch {
+      setStatus(ok ? "文案已复制，请手动打开小红书个人资料页" : "请手动复制文案并打开小红书");
     }
   }
 
@@ -2191,7 +2201,8 @@ function RednoteHandoff({ variant, imageFiles }) {
       <div className="export-handoff-actions">
         <button type="button" className="ghost-btn" onClick={handleCopy}>📋 复制文案</button>
         <button type="button" className="ghost-btn" onClick={handleShare}>📤 分享/带图</button>
-        <button type="button" className="ghost-btn" onClick={handleOpenPublisher}>📲 打开发布器</button>
+        <button type="button" className="ghost-btn" onClick={handleOpenPublisher}>📲 个人入口发布</button>
+        <button type="button" className="ghost-btn" onClick={handleOpenProfile}>👤 个人资料</button>
       </div>
       <ol className="export-handoff-steps">
         {REDNOTE_PUBLISH_STEPS.map(step => (

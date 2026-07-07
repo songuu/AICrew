@@ -2,14 +2,60 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  REDNOTE_HOME_DEEPLINK,
+  REDNOTE_PROFILE_DEEPLINK,
+  REDNOTE_PUBLISH_BASE_DEEPLINK,
   REDNOTE_PUBLISH_DEEPLINK,
   REDNOTE_PUBLISH_STEPS,
+  buildRednotePublishDeeplink,
   supportsRednoteHandoff,
   buildRednoteShareText
 } from "../lib/share/rednote.js";
 
-test("deeplink targets the 小红书 image-note publisher", () => {
-  assert.equal(REDNOTE_PUBLISH_DEEPLINK, "xhsdiscover://post_note/");
+function parseRednoteDeeplink(url) {
+  const [base, query = ""] = url.split("?");
+  const params = new URLSearchParams(query);
+  return {
+    base,
+    params,
+    source: JSON.parse(params.get("source"))
+  };
+}
+
+test("deeplink targets the official 小红书 publisher with personal source", () => {
+  const parsed = parseRednoteDeeplink(REDNOTE_PUBLISH_DEEPLINK);
+  assert.equal(parsed.base, REDNOTE_PUBLISH_BASE_DEEPLINK);
+  assert.equal(parsed.base, "xhsdiscover://post");
+  assert.ok(!REDNOTE_PUBLISH_DEEPLINK.includes("post_note"), "legacy post_note should not be the default route");
+  assert.equal(parsed.source.type, "personal");
+  assert.equal(parsed.source.ids, "");
+  assert.equal(parsed.source.extraInfo.from, "aicrew");
+  assert.equal(parsed.source.extraInfo.handoff, "clipboard");
+});
+
+test("buildRednotePublishDeeplink keeps source and draft options explicit", () => {
+  const parsed = parseRednoteDeeplink(buildRednotePublishDeeplink({
+    sourceType: "home",
+    sourceIds: "source-1",
+    ignoreDraft: true,
+    extraInfo: { handoff: "web-share" }
+  }));
+  assert.equal(parsed.base, "xhsdiscover://post");
+  assert.equal(parsed.params.get("ignore_draft"), "true");
+  assert.equal(parsed.source.type, "home");
+  assert.equal(parsed.source.ids, "source-1");
+  assert.equal(parsed.source.extraInfo.from, "aicrew");
+  assert.equal(parsed.source.extraInfo.handoff, "web-share");
+});
+
+test("buildRednotePublishDeeplink falls back to personal source for unknown source types", () => {
+  const parsed = parseRednoteDeeplink(buildRednotePublishDeeplink({ sourceType: "unsupported" }));
+  assert.equal(parsed.source.type, "personal");
+});
+
+test("personal entry links target documented 小红书 pages", () => {
+  assert.equal(REDNOTE_HOME_DEEPLINK, "xhsdiscover://home");
+  assert.equal(REDNOTE_PROFILE_DEEPLINK, "xhsdiscover://me/profile");
 });
 
 test("publish steps are a non-empty credential-free guidance list", () => {
